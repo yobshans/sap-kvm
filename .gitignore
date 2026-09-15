@@ -1,1 +1,3 @@
 inventory_vm.ini
+__pycache__/
+*.pyc
