@@ -1,0 +1,64 @@
+---
+# ============================================================================
+# Disk — prepare VM disk image from RHEL guest image
+# ============================================================================
+
+- name: Create KVM base directory
+  ansible.builtin.file:
+    path: "{{ kvm_base_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Download RHEL guest image (when enabled)
+  ansible.builtin.get_url:
+    url: "{{ guest_image_url }}"
+    dest: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
+    mode: "0644"
+  when: download_guest_image | bool
+
+- name: Check source image exists
+  ansible.builtin.stat:
+    path: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
+  register: src_image
+
+- name: Fail if source image missing
+  ansible.builtin.fail:
+    msg: >
+      Source image not found at {{ kvm_base_dir }}/{{ guest_image_filename }}.
+      Set download_guest_image=true or copy the image manually.
+  when: not src_image.stat.exists
+
+- name: Check if VM disk already exists
+  ansible.builtin.stat:
+    path: "{{ vm_disk_path }}"
+  register: vm_disk
+
+- name: Copy guest image to VM disk (reflink if supported)
+  ansible.builtin.shell: >
+    cp --reflink=auto
+    {{ kvm_base_dir }}/{{ guest_image_filename }}
+    {{ vm_disk_path }}
+  when: not vm_disk.stat.exists
+  changed_when: true
+
+- name: Resize VM disk to {{ vm_disk_size }}
+  ansible.builtin.command: >
+    qemu-img resize {{ vm_disk_path }} {{ vm_disk_size }}
+  when: not vm_disk.stat.exists
+  changed_when: true
+
+- name: Set root password via virt-customize
+  ansible.builtin.command: >
+    virt-customize -a {{ vm_disk_path }}
+    --root-password password:{{ vm_root_password }}
+  when: not vm_disk.stat.exists
+  changed_when: true
+
+- name: Verify disk image
+  ansible.builtin.command: qemu-img info {{ vm_disk_path }}
+  register: disk_info
+  changed_when: false
+
+- name: Display disk info
+  ansible.builtin.debug:
+    var: disk_info.stdout_lines

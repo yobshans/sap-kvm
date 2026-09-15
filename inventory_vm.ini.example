@@ -1,0 +1,17 @@
+# Copy to inventory_vm.ini and edit. inventory_vm.ini is gitignored (SSH password).
+#
+# The playbook targets [kvm_host]. Keep exactly one host.
+# ansible_ssh_pass requires sshpass on the Ansible controller:  dnf install sshpass
+
+[kvm_host]
+# Remote hypervisor — set ansible_host to an IP or DNS name you can ping/ssh:
+kvmhost ansible_host=192.168.1.10
+
+# This machine is the KVM host (comment out kvmhost above, then uncomment):
+# localhost ansible_connection=local
+
+[all:vars]
+ansible_ssh_user=root
+ansible_ssh_pass=CHANGE_ME
+ansible_python_interpreter=/usr/libexec/platform-python
+ansible_ssh_common_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"

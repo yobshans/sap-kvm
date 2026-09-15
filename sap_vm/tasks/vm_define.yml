@@ -1,0 +1,122 @@
+---
+# ============================================================================
+# VM Define — create and start the KVM domain
+# ============================================================================
+
+- name: Check if VM is already defined
+  ansible.builtin.command: virsh dominfo {{ vm_name }}
+  register: vm_info
+  changed_when: false
+  failed_when: false
+
+- name: Check VM state
+  ansible.builtin.command: virsh domstate {{ vm_name }}
+  register: vm_state
+  changed_when: false
+  failed_when: false
+
+- name: Generate VM domain XML
+  ansible.builtin.template:
+    src: vm-domain.xml.j2
+    dest: "{{ kvm_base_dir }}/{{ vm_name }}.xml"
+    mode: "0644"
+  when: vm_info.rc != 0 or (vm_state.rc == 0 and 'running' not in vm_state.stdout)
+
+- name: Define VM from XML
+  ansible.builtin.command: virsh define {{ kvm_base_dir }}/{{ vm_name }}.xml
+  when: vm_info.rc != 0 or (vm_state.rc == 0 and 'running' not in vm_state.stdout)
+  changed_when: true
+
+- name: Start VM
+  ansible.builtin.command: virsh start {{ vm_name }}
+  register: vm_start
+  when: vm_state.rc != 0 or 'running' not in vm_state.stdout
+  changed_when: vm_start.rc == 0
+  failed_when: false
+
+- name: Use libvirt host TSC frequency when the requested value is rejected
+  when:
+    - not (vm_start.skipped | default(false))
+    - vm_start.rc | default(0) != 0
+    - (vm_start.stderr | default('')) is search('TSC frequency')
+  block:
+    - name: Parse host TSC frequency from libvirt
+      ansible.builtin.set_fact:
+        vm_tsc_frequency: "{{ vm_start.stderr | regex_search('host frequency ([0-9]+) Hz', '\\1') }}"
+
+    - name: Fail if libvirt did not advertise a host TSC frequency
+      ansible.builtin.fail:
+        msg: "{{ vm_start.stderr }}"
+      when: not (vm_tsc_frequency | default('') | string | regex_search('^[0-9]+$'))
+
+    - name: Show corrected TSC frequency
+      ansible.builtin.debug:
+        msg: "Host CPU does not support TSC scaling; using {{ vm_tsc_frequency }} Hz"
+
+    - name: Regenerating domain XML with host TSC frequency
+      ansible.builtin.template:
+        src: vm-domain.xml.j2
+        dest: "{{ kvm_base_dir }}/{{ vm_name }}.xml"
+        mode: "0644"
+
+    - name: Redefine VM with host TSC frequency
+      ansible.builtin.command: virsh define {{ kvm_base_dir }}/{{ vm_name }}.xml
+      changed_when: true
+
+    - name: Start VM after TSC correction
+      ansible.builtin.command: virsh start {{ vm_name }}
+      register: vm_start_retry
+      changed_when: true
+
+- name: Fail if the VM did not start
+  ansible.builtin.fail:
+    msg: "{{ vm_start.stderr | default('virsh start failed') }}"
+  when:
+    - not (vm_start.skipped | default(false))
+    - vm_start.rc | default(0) != 0
+    - vm_start_retry is not defined
+
+
+- name: Set VM to autostart
+  ansible.builtin.command: virsh autostart {{ vm_name }}
+  changed_when: false
+
+- name: Display VM info
+  ansible.builtin.command: virsh dominfo {{ vm_name }}
+  register: vm_running_info
+  changed_when: false
+
+- name: Show VM info
+  ansible.builtin.debug:
+    var: vm_running_info.stdout_lines
+
+- name: Wait for VM to get an IP address (up to 120s)
+  ansible.builtin.shell: |
+    for i in $(seq 1 40); do
+      IP=$(virsh domifaddr {{ vm_name }} 2>/dev/null | grep -oP '192\.168\.\d+\.\d+')
+      if [ -n "$IP" ]; then
+        echo "$IP"
+        exit 0
+      fi
+      sleep 3
+    done
+    echo "TIMEOUT"
+    exit 1
+  register: vm_ip_result
+  changed_when: false
+
+- name: Set VM IP fact
+  ansible.builtin.set_fact:
+    vm_ip: "{{ vm_ip_result.stdout | trim }}"
+
+- name: Display VM IP
+  ansible.builtin.debug:
+    msg: "VM IP address: {{ vm_ip }}"
+
+- name: Wait for SSH to become available
+  ansible.builtin.wait_for:
+    host: "{{ vm_ip }}"
+    port: 22
+    delay: 5
+    timeout: 120
+    state: started

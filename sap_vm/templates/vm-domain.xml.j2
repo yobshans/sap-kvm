@@ -1,0 +1,114 @@
+<domain type='kvm'>
+  <name>{{ vm_name }}</name>
+  <memory unit='MiB'>{{ vm_memory_mib }}</memory>
+  <currentMemory unit='MiB'>{{ vm_memory_mib }}</currentMemory>
+  <vcpu placement='static'>{{ vm_vcpus }}</vcpu>
+  <iothreads>{{ vm_iothreads }}</iothreads>
+  <iothreadids>
+{% for tid in range(1, (vm_iothreads | int) + 1) %}
+    <iothread id='{{ tid }}'/>
+{% endfor %}
+  </iothreadids>
+
+  <!-- CPU pinning generated from hypervisor NUMA / SMT topology -->
+  <cputune>
+{% for pin in vm_cpu_pins %}
+    <vcpupin vcpu='{{ pin.vcpu }}' cpuset='{{ pin.cpuset }}'/>
+{% endfor %}
+    <emulatorpin cpuset='{{ vm_emulatorpin }}'/>
+{% for pin in vm_iothreadpins %}
+    <iothreadpin iothread='{{ pin.iothread }}' cpuset='{{ pin.cpuset }}'/>
+{% endfor %}
+  </cputune>
+
+  <!-- Guest NUMA cells bound 1:1 to host NUMA nodes -->
+  <numatune>
+    <memory mode='strict' nodeset='{{ hugepage_nodes | join(",") }}'/>
+{% for n in hugepage_nodes %}
+    <memnode cellid='{{ loop.index0 }}' mode='strict' nodeset='{{ n }}'/>
+{% endfor %}
+  </numatune>
+
+  <os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+
+  <!-- CPU: host-passthrough with explicit guest topology -->
+  <cpu mode='host-passthrough' check='none' migratable='on'>
+    <topology sockets='{{ vm_sockets }}' dies='1' clusters='1' cores='{{ vm_cores_per_socket }}' threads='{{ vm_threads_per_core }}'/>
+    <cache level='3' mode='emulate'/>
+{% for feat in vm_cpu_features %}
+    <feature policy='require' name='{{ feat }}'/>
+{% endfor %}
+    <numa>
+{% set cpus_per_node = (vm_vcpus | int) // (vm_numa_nodes | int) %}
+{% for n in hugepage_nodes %}
+{% set cpu_start = loop.index0 * cpus_per_node %}
+{% set cpu_end = cpu_start + cpus_per_node - 1 %}
+      <cell id='{{ loop.index0 }}' cpus='{{ cpu_start }}-{{ cpu_end }}' memory='{{ vm_numa_memory_mib }}' unit='MiB'/>
+{% endfor %}
+    </numa>
+  </cpu>
+
+  <clock offset='utc'>
+    <timer name='tsc'{% if vm_tsc_frequency | default('') | string | regex_search('^[0-9]+$') %} frequency='{{ vm_tsc_frequency }}'{% endif %}/>
+  </clock>
+
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+
+  <!-- Hugepage-backed memory -->
+  <memoryBacking>
+    <hugepages>
+{% for n in hugepage_nodes %}
+      <page size='{{ hugepages_size_kb }}' unit='KiB' nodeset='{{ n }}'/>
+{% endfor %}
+    </hugepages>
+  </memoryBacking>
+
+  <devices>
+    <!-- Console -->
+    <serial type='pty'>
+      <target port='0'/>
+    </serial>
+    <console type='pty'>
+      <target type='serial' port='0'/>
+    </console>
+
+    <!-- VM disk: virtio-blk, cache=none for SAP I/O -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none' io='native'{% if (vm_iothreads | int) > 0 %} iothread='1'{% endif %}/>
+      <source file='{{ vm_disk_path }}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+
+    <!-- Cloud-init seed ISO -->
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='{{ cloud_init_iso }}'/>
+      <target dev='sda' bus='sata'/>
+      <readonly/>
+    </disk>
+
+    <!-- Network: default NAT -->
+    <interface type='network'>
+      <source network='{{ vm_network }}'/>
+      <model type='virtio'/>
+    </interface>
+
+    <!-- RNG for entropy -->
+    <rng model='virtio'>
+      <backend model='random'>/dev/urandom</backend>
+    </rng>
+
+    <!-- Memory ballooning disabled for SAP HANA -->
+    <memballoon model='none'/>
+  </devices>
+</domain>

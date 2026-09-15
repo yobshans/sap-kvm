@@ -1,0 +1,45 @@
+---
+# ============================================================================
+# Cloud-init — generate seed ISO for first-boot configuration
+# ============================================================================
+
+- name: Create cloud-init directory
+  ansible.builtin.file:
+    path: "{{ cloud_init_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Generate hashed root password
+  ansible.builtin.command: openssl passwd -6 '{{ vm_root_password }}'
+  register: hashed_pw
+  changed_when: false
+  no_log: true
+
+- name: Write cloud-init user-data
+  ansible.builtin.template:
+    src: user-data.j2
+    dest: "{{ cloud_init_dir }}/user-data"
+    mode: "0644"
+
+- name: Write cloud-init meta-data
+  ansible.builtin.template:
+    src: meta-data.j2
+    dest: "{{ cloud_init_dir }}/meta-data"
+    mode: "0644"
+
+- name: Check if cloud-init ISO exists
+  ansible.builtin.stat:
+    path: "{{ cloud_init_iso }}"
+  register: cidata_iso
+
+- name: Generate cloud-init ISO
+  ansible.builtin.command: >
+    genisoimage
+    -output {{ cloud_init_iso }}
+    -volid cidata
+    -joliet
+    -rock
+    {{ cloud_init_dir }}/user-data
+    {{ cloud_init_dir }}/meta-data
+  when: not cidata_iso.stat.exists
+  changed_when: true

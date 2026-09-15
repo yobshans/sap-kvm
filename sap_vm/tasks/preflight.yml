@@ -1,0 +1,72 @@
+---
+# ============================================================================
+# Preflight — validate host is KVM-capable and has required resources
+# ============================================================================
+
+- name: Ensure required packages are installed
+  ansible.builtin.dnf:
+    name:
+      - qemu-kvm
+      - libvirt
+      - virt-install
+      - libguestfs-tools
+      - guestfs-tools
+      - genisoimage
+      - python3
+      - numactl
+      - sshpass
+    state: present
+
+- name: Validate KVM host
+  ansible.builtin.command: virt-host-validate qemu
+  register: virt_validate
+  changed_when: false
+  failed_when: "'FAIL' in virt_validate.stdout"
+
+- name: Display host validation
+  ansible.builtin.debug:
+    var: virt_validate.stdout_lines
+
+- name: Gather host CPU info
+  ansible.builtin.command: lscpu
+  register: lscpu_out
+  changed_when: false
+
+- name: Gather host NUMA topology
+  ansible.builtin.command: numactl --hardware
+  register: numactl_out
+  changed_when: false
+
+- name: Display host NUMA topology
+  ansible.builtin.debug:
+    var: numactl_out.stdout_lines
+
+- name: Gather host memory
+  ansible.builtin.command: free -h
+  register: free_out
+  changed_when: false
+
+- name: Display host memory
+  ansible.builtin.debug:
+    var: free_out.stdout_lines
+
+- name: Ensure libvirtd is running
+  ansible.builtin.systemd:
+    name: libvirtd
+    state: started
+    enabled: true
+
+- name: Ensure default network is active
+  ansible.builtin.command: virsh net-info {{ vm_network }}
+  register: net_info
+  changed_when: false
+  failed_when: false
+
+- name: Start default network if inactive
+  ansible.builtin.command: virsh net-start {{ vm_network }}
+  when: "'inactive' in net_info.stdout"
+  changed_when: true
+
+- name: Autostart default network
+  ansible.builtin.command: virsh net-autostart {{ vm_network }}
+  changed_when: false

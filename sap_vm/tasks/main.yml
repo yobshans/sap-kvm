@@ -1,0 +1,44 @@
+---
+# ============================================================================
+# KVM HANA VM — Main task orchestrator
+# ============================================================================
+
+- name: Include preflight checks
+  ansible.builtin.include_tasks: preflight.yml
+  tags: [preflight]
+
+- name: Include cleanup tasks (when destroy_existing_vm=true)
+  ansible.builtin.include_tasks: cleanup.yml
+  when: destroy_existing_vm | bool
+  tags: [cleanup]
+
+- name: Include hypervisor topology discovery
+  ansible.builtin.include_tasks:
+    file: topology.yml
+    apply:
+      tags: [always, topology]
+  tags: [always, topology]
+
+- name: Include hugepages configuration
+  ansible.builtin.include_tasks: hugepages.yml
+  tags: [hugepages]
+
+- name: Include disk preparation
+  ansible.builtin.include_tasks: disk.yml
+  tags: [disk]
+
+- name: Include cloud-init setup
+  ansible.builtin.include_tasks: cloud_init.yml
+  tags: [cloud_init]
+
+- name: Include VM definition and start
+  ansible.builtin.include_tasks: vm_define.yml
+  tags: [vm_define]
+
+- name: Include post-boot configuration
+  ansible.builtin.include_tasks: post_boot.yml
+  tags: [post_boot]
+
+- name: Include verification
+  ansible.builtin.include_tasks: verify.yml
+  tags: [verify]

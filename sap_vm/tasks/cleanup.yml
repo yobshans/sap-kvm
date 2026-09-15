@@ -1,0 +1,32 @@
+---
+# ============================================================================
+# Cleanup — destroy existing VM if requested
+# ============================================================================
+
+- name: Check if VM exists
+  ansible.builtin.command: virsh dominfo {{ vm_name }}
+  register: vm_exists
+  changed_when: false
+  failed_when: false
+
+- name: Destroy running VM
+  ansible.builtin.command: virsh destroy {{ vm_name }}
+  when: vm_exists.rc == 0
+  changed_when: true
+  failed_when: false
+
+- name: Undefine VM
+  ansible.builtin.command: virsh undefine {{ vm_name }} --nvram
+  when: vm_exists.rc == 0
+  changed_when: true
+  failed_when: false
+
+- name: Remove old VM disk
+  ansible.builtin.file:
+    path: "{{ vm_disk_path }}"
+    state: absent
+
+- name: Remove old cloud-init ISO
+  ansible.builtin.file:
+    path: "{{ cloud_init_iso }}"
+    state: absent

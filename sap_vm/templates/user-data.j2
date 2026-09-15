@@ -1,0 +1,31 @@
+#cloud-config
+
+hostname: {{ vm_hostname }}
+manage_etc_hosts: true
+disable_root: false
+ssh_pwauth: true
+
+users:
+  - name: root
+    lock_passwd: false
+    hashed_passwd: '{{ hashed_pw.stdout }}'
+    shell: /bin/bash
+
+chpasswd:
+  expire: false
+  list: |
+    root:{{ vm_root_password }}
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-sap.conf
+    permissions: "0644"
+    content: |
+      PermitRootLogin yes
+      PasswordAuthentication yes
+
+runcmd:
+  - passwd -u root || true
+  - systemctl enable --now sshd
+  - systemctl reload sshd || systemctl restart sshd || true
+  - growpart /dev/vda 4 || true
+  - xfs_growfs / || resize2fs /dev/vda4 || true

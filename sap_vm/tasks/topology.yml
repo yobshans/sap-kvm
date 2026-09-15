@@ -1,0 +1,78 @@
+---
+# ============================================================================
+# Topology — discover hypervisor hardware and derive the HANA guest layout
+# Follows Red Hat SAP HANA on RHV/KVM (1 GiB hugepages, first core/node reserved)
+# ============================================================================
+
+- name: Discover hypervisor topology
+  ansible.builtin.script: >
+    {{ role_path }}/files/discover_hana_topology.py
+    --reserve-gib {{ hypervisor_reserve_gib }}
+    --reserve-min-gib-per-node {{ hypervisor_reserve_min_gib_per_node }}
+    --kvm-dir {{ kvm_base_dir }}
+    --disk-preferred-gib {{ vm_disk_preferred_gib }}
+    --disk-reserve-gib {{ vm_disk_reserve_gib }}
+    --hugepage-size-kb {{ hugepages_size_kb }}
+    --iothreads {{ vm_iothreads }}
+    {% if not (host_reserve_first_core | bool) %}--no-reserve-first-core{% endif %}
+    {% if vm_vcpus != 'auto' %}--vcpus {{ vm_vcpus }}{% endif %}
+    {% if vm_memory_mib != 'auto' %}--memory-mib {{ vm_memory_mib }}{% endif %}
+    {% if vm_disk_size != 'auto' %}--disk-size {{ vm_disk_size }}{% endif %}
+    {% if vm_tsc_frequency != 'auto' %}--tsc-hz {{ vm_tsc_frequency }}{% endif %}
+  args:
+    executable: /usr/bin/python3
+  register: hana_topo_raw
+  changed_when: false
+
+- name: Parse discovered topology
+  ansible.builtin.set_fact:
+    hana_topology: "{{ hana_topo_raw.stdout | from_json }}"
+
+- name: Apply discovered guest configuration
+  ansible.builtin.set_fact:
+    vm_vcpus: "{{ hana_topology.guest.vcpus | int }}"
+    vm_sockets: "{{ hana_topology.guest.sockets | int }}"
+    vm_cores_per_socket: "{{ hana_topology.guest.cores_per_socket | int }}"
+    vm_threads_per_core: "{{ hana_topology.guest.threads_per_core | int }}"
+    vm_numa_nodes: "{{ hana_topology.guest.numa_nodes | int }}"
+    vm_memory_mib: "{{ hana_topology.guest.memory_mib | int }}"
+    vm_numa_memory_mib: "{{ hana_topology.guest.numa_memory_mib | int }}"
+    vm_cpu_pins: "{{ hana_topology.guest.cpu_pins }}"
+    vm_emulatorpin: "{{ hana_topology.guest.emulatorpin }}"
+    vm_iothreads: "{{ hana_topology.guest.iothreads | int }}"
+    vm_iothreadpins: "{{ hana_topology.guest.iothreadpins }}"
+    vm_iothreadpin: "{{ hana_topology.guest.iothreadpin }}"
+    hugepages_size_kb: "{{ hana_topology.guest.hugepages_size_kb | int }}"
+    hugepages_per_node: "{{ hana_topology.guest.hugepages_per_node | int }}"
+    hugepage_nodes: "{{ hana_topology.guest.hugepage_nodes }}"
+    vm_tsc_frequency: "{{ hana_topology.guest.tsc_frequency | default(none, true) }}"
+    vm_disk_size: "{{ hana_topology.guest.disk_size }}"
+    hana_host_topology: "{{ hana_topology.host }}"
+
+- name: Display derived SAP HANA VM layout
+  ansible.builtin.debug:
+    msg: "{{ hana_topology.summary }}"
+
+- name: Validate derived topology
+  ansible.builtin.assert:
+    that:
+      - (vm_vcpus | int) > 0
+      - (vm_cpu_pins | length) == (vm_vcpus | int)
+      - (vm_vcpus | int) == (vm_sockets | int) * (vm_cores_per_socket | int) * (vm_threads_per_core | int)
+      - (vm_memory_mib | int) == (vm_numa_memory_mib | int) * (vm_numa_nodes | int)
+      - (hugepages_per_node | int) > 0
+      - (hugepage_nodes | length) == (vm_numa_nodes | int)
+    fail_msg: "Derived guest topology is inconsistent: {{ hana_topology.summary }}"
+    success_msg: "Guest topology matches hypervisor hardware ({{ vm_vcpus }} vCPUs, {{ vm_memory_mib }} MiB, {{ vm_numa_nodes }} NUMA cells)"
+
+- name: Ensure KVM base directory exists
+  ansible.builtin.file:
+    path: "{{ kvm_base_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Save discovered topology JSON
+  ansible.builtin.copy:
+    content: "{{ hana_topology | to_nice_json }}"
+    dest: "{{ kvm_base_dir }}/{{ vm_name }}-topology.json"
+    mode: "0644"

@@ -1,0 +1,57 @@
+---
+# ============================================================================
+# Hugepages — reserve 1 GiB hugepages on each NUMA node
+# ============================================================================
+
+- name: Reserve hugepages on each NUMA node
+  ansible.builtin.shell: |
+    current=$(cat /sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages)
+    if [ "$current" -lt "{{ hugepages_per_node }}" ]; then
+      echo {{ hugepages_per_node }} > /sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages
+      echo "changed"
+    else
+      echo "ok"
+    fi
+  loop: "{{ hugepage_nodes }}"
+  register: hp_result
+  changed_when: "'changed' in hp_result.stdout"
+
+- name: Verify hugepage allocation
+  ansible.builtin.shell: |
+    echo "===== NODE {{ item }} ====="
+    echo "nr_hugepages: $(cat /sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages)"
+    echo "free_hugepages: $(cat /sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/free_hugepages)"
+  loop: "{{ hugepage_nodes }}"
+  register: hp_verify
+  changed_when: false
+
+- name: Display hugepage status
+  ansible.builtin.debug:
+    msg: "{{ hp_verify.results | map(attribute='stdout_lines') | list }}"
+
+- name: Collect allocated hugepage counts
+  ansible.builtin.command: cat /sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages
+  register: hp_count
+  changed_when: false
+  loop: "{{ hugepage_nodes }}"
+
+- name: Fail if 1GiB hugepages are not reserved
+  ansible.builtin.fail:
+    msg: |
+      1GiB hugepages could not be reserved at runtime (kernel still reports
+      {{ hp_count.results | map(attribute='stdout') | list }} pages on nodes {{ hugepage_nodes }}).
+      Need {{ hugepages_per_node }} pages of {{ hugepages_size_kb }} KiB per NUMA node
+      ({{ (hugepages_per_node | int) * (hugepage_nodes | length) }} pages total).
+
+      1GiB pages must be reserved at boot. Set nr_hugepages on the kernel command
+      line, reboot, then re-run this playbook:
+
+        grubby --update-kernel=ALL --args="default_hugepagesz=1G hugepagesz=1G hugepages={{ (hugepages_per_node | int) * (hugepage_nodes | length) }}"
+        reboot
+
+      After reboot, confirm with:
+        grep Huge /proc/meminfo
+        cat /sys/devices/system/node/node*/hugepages/hugepages-1048576kB/nr_hugepages
+
+        ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini
+  when: hp_count.results | map(attribute='stdout') | map('int') | select('lt', hugepages_per_node | int) | list | length > 0

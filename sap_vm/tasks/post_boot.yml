@@ -1,0 +1,77 @@
+---
+# ============================================================================
+# Post-boot — configure repos, SSH, and guest OS inside the VM
+# ============================================================================
+
+- name: Wait for SSH password login
+  ansible.builtin.shell: >
+    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
+    root@{{ vm_ip }}
+    'echo ok'
+  register: ssh_ready
+  retries: 24
+  delay: 5
+  until: ssh_ready.rc == 0
+  changed_when: false
+
+- name: Wait for cloud-init to finish inside VM
+  ansible.builtin.shell: >
+    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
+    root@{{ vm_ip }}
+    'cloud-init status --wait 2>/dev/null || sleep 30; echo done'
+  changed_when: false
+  register: cloud_init_wait
+  timeout: 300
+
+- name: Configure yum repos inside VM
+  ansible.builtin.shell: |
+    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }} root@{{ vm_ip }} bash -s << 'REPO_EOF'
+    cat > /etc/yum.repos.d/{{ item.name }}.repo << 'EOF'
+    [{{ item.name }}]
+    name={{ item.description }}
+    baseurl={{ item.baseurl }}
+    enabled=1
+    gpgcheck=0
+    skip_if_unavailable=1
+    EOF
+    REPO_EOF
+  loop: "{{ vm_repos }}"
+  changed_when: true
+
+- name: Verify repos are configured
+  ansible.builtin.shell: >
+    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
+    root@{{ vm_ip }}
+    'dnf repolist'
+  register: repo_list
+  changed_when: false
+
+- name: Display configured repos
+  ansible.builtin.debug:
+    var: repo_list.stdout_lines
+
+- name: Install guest packages for HCMT and verification
+  ansible.builtin.shell: >
+    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
+    root@{{ vm_ip }}
+    'dnf install -y {{ vm_packages | join(" ") }}'
+  register: vm_pkg_install
+  changed_when: "'Installed' in vm_pkg_install.stdout or 'Complete' in vm_pkg_install.stdout"
+  timeout: 600
+
+- name: Ensure PermitRootLogin yes in VM
+  ansible.builtin.shell: >
+    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
+    root@{{ vm_ip }}
+    'printf "%s\n" "PermitRootLogin yes" "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-sap.conf &&
+     systemctl reload sshd || systemctl restart sshd'
+  changed_when: true
+
+- name: Grow root filesystem to fill disk
+  ansible.builtin.shell: >
+    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
+    root@{{ vm_ip }}
+    'growpart /dev/vda 4 2>/dev/null || true;
+     xfs_growfs / 2>/dev/null || resize2fs /dev/vda4 2>/dev/null || true'
+  changed_when: false
+  failed_when: false

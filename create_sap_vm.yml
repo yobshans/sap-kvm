@@ -1,0 +1,22 @@
+---
+# create_sap_vm.yml — Create KVM VM for SAP HANA benchmarking
+
+- name: Create KVM HANA VM
+  hosts: kvm_host
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Require vm_root_password extra-var
+      ansible.builtin.assert:
+        that:
+          - vm_root_password is defined
+          - vm_root_password | length > 0
+        fail_msg: >-
+          vm_root_password is required and is not stored in git.
+          Pass it when you run the playbook:
+            ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini -e vm_root_password='...'
+      tags: [always]
+
+  roles:
+    - role: sap_vm

@@ -1,0 +1,124 @@
+---
+# ============================================================================
+# KVM HANA VM — Role Defaults
+# ============================================================================
+
+# --- VM identity ---
+vm_name: sap-kvm-vm
+vm_hostname: sap-kvm-vm
+# Root password is not stored in git. Required at runtime:
+#   ansible-playbook ... -e vm_root_password='...'
+# Non-interactive SSH into the guest (never prompt for a password)
+vm_ssh_opts: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o PreferredAuthentications=password
+  -o PubkeyAuthentication=no
+  -o NumberOfPasswordPrompts=1
+  -o ConnectTimeout=10
+
+# --- Guest topology ---
+# Set any of these to a concrete value to override discovery.
+# "auto" derives layout from the hypervisor (SAP HANA on KVM best practices):
+#   sockets = host NUMA nodes
+#   cores   = host cores/node minus 1 (first core reserved for emulator/iothread)
+#   threads = host SMT
+#   memory  = host NUMA memory minus hypervisor reserve, 1 GiB aligned
+vm_vcpus: auto
+vm_memory_mib: auto
+vm_sockets: auto
+vm_cores_per_socket: auto
+vm_threads_per_core: auto
+vm_numa_nodes: auto
+vm_numa_memory_mib: auto
+vm_cpu_features:
+  - rdtscp
+  - invtsc
+  - x2apic
+
+# --- Host → guest mapping ---
+host_reserve_first_core: true
+hypervisor_reserve_gib: 100            # PDF rule of thumb; scaled down on small hosts
+hypervisor_reserve_min_gib_per_node: 2
+
+# --- IO threads / emulator pinning (auto from reserved host cores) ---
+vm_iothreads: 1
+vm_emulatorpin: auto
+vm_iothreadpin: auto
+
+# TSC frequency (Hz). auto = host TSC (required when the CPU has no TSC scaling)
+vm_tsc_frequency: auto
+
+# --- Hugepages (prefer 1 GiB; discovery falls back to 2 MiB if unavailable) ---
+hugepages_size_kb: 1048576
+hugepages_per_node: auto
+hugepage_nodes: auto
+
+# --- Storage ---
+kvm_base_dir: /home/kvm
+guest_image_filename: "rhel-guest-image-10.2-20260825.0.x86_64.qcow2"
+guest_image_url: "https://download-01.beak-001.prod.iad2.dc.redhat.com/brewroot/packages/rhel-guest-image/10.2/20260825.0/images/rhel-guest-image-10.2-20260825.0.x86_64.qcow2"
+vm_disk_size: auto                     # preferred OS disk, reduced to free space if needed
+vm_disk_preferred_gib: 150
+vm_disk_reserve_gib: 32                # keep this much free on the image filesystem
+vm_disk_path: "{{ kvm_base_dir }}/{{ vm_name }}.qcow2"
+
+# --- Cloud-init ---
+cloud_init_dir: "{{ kvm_base_dir }}/cloud-init"
+cloud_init_iso: "{{ cloud_init_dir }}/{{ vm_name }}-cidata.iso"
+
+# --- Networking ---
+vm_network: default
+vm_bridge: ""                   # leave empty to use NAT default network
+
+# --- Yum repos to configure inside guest ---
+vm_repos:
+  - name: beaker-BaseOS
+    description: beaker-BaseOS
+    baseurl: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260430.d.0/compose/BaseOS/x86_64/os"
+  - name: beaker-AppStream
+    description: beaker-AppStream
+    baseurl: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260430.d.0/compose/AppStream/x86_64/os"
+  - name: beaker-CRB
+    description: beaker-CRB
+    baseurl: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260430.d.0/compose/CRB/x86_64/os"
+
+# Guest packages for verification and SAP HCMT
+vm_packages:
+  - numactl
+  - numactl-libs
+  - util-linux
+  - procps-ng
+  - iproute
+  - pciutils
+  - dmidecode
+  - sysstat
+  - ethtool
+  - hwloc
+  - libaio
+  - libatomic
+  - unzip
+  - tar
+  - gzip
+  - wget
+  - curl
+  - bind-utils
+  - net-tools
+  - nfs-utils
+  - sg3_utils
+  - smartmontools
+  - fio
+  - iperf3
+  - chrony
+  - tuned
+  - xfsprogs
+  - rsync
+  - which
+  - hostname
+  - openssl
+  - uuidd
+  - lshw
+
+# --- Feature flags ---
+download_guest_image: false     # set true to curl the image from Brew
+destroy_existing_vm: false      # set true to tear down existing VM first
