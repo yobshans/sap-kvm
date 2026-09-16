@@ -1,0 +1,197 @@
+{# YAML topology derived from sysfs slurps and Ansible facts. #}
+{% macro expand_cpus(text) -%}
+{% set ns = namespace(cpus=[]) -%}
+{% for part in (text | default('') | trim).split(',') -%}
+{% set p = part | trim -%}
+{% if p -%}
+{% if '-' in p -%}
+{% for i in range(p.split('-')[0] | int, (p.split('-')[1] | int) + 1) -%}
+{% set ns.cpus = ns.cpus + [i] -%}
+{% endfor -%}
+{% else -%}
+{% set ns.cpus = ns.cpus + [p | int] -%}
+{% endif -%}
+{% endif -%}
+{% endfor -%}
+{{ ns.cpus | to_json }}
+{%- endmacro %}
+{% macro format_cpuset(cpu_list) -%}
+{% set ordered = cpu_list | unique | sort -%}
+{% set ns = namespace(parts=[], start=none, prev=none) -%}
+{% for cpu in ordered -%}
+{% if ns.start is none -%}
+{% set ns.start = cpu -%}
+{% set ns.prev = cpu -%}
+{% elif cpu == ns.prev + 1 -%}
+{% set ns.prev = cpu -%}
+{% else -%}
+{% set ns.parts = ns.parts + ([ns.start | string] if ns.start == ns.prev else [ns.start | string ~ '-' ~ ns.prev | string]) -%}
+{% set ns.start = cpu -%}
+{% set ns.prev = cpu -%}
+{% endif -%}
+{% endfor -%}
+{% if ns.start is not none -%}
+{% set ns.parts = ns.parts + ([ns.start | string] if ns.start == ns.prev else [ns.start | string ~ '-' ~ ns.prev | string]) -%}
+{% endif -%}
+{{ ns.parts | join(',') }}
+{%- endmacro %}
+{% set acc = namespace(sibling_map={}, cores_by_node=[], node_mem_mib={}, node_cpu_map={}, guest_cores=[], reserved=[], pins=[], vcpu=0, iothreadpins=[], widths=[], kvm_avail=0, kvm_found=false) %}
+{% for r in (cpu_sibling_slurp.results | default([])) %}
+{% if r.content is defined and not (r.failed | default(false)) %}
+{% set cpu_id = r.item.path | basename | regex_replace('^cpu', '') | int %}
+{% set acc.sibling_map = acc.sibling_map | combine({(cpu_id | string): (expand_cpus(r.content | b64decode | trim) | from_json)}) %}
+{% endif %}
+{% endfor %}
+{% for node in numa_node_ids %}
+{% set cpus = expand_cpus(numa_cpulist_slurp.results[loop.index0].content | b64decode | trim) | from_json %}
+{% set acc.node_cpu_map = acc.node_cpu_map | combine({(node | string): cpus}) %}
+{% set mem_text = numa_meminfo_slurp.results[loop.index0].content | b64decode %}
+{% set acc.node_mem_mib = acc.node_mem_mib | combine({(node | string): ((mem_text | regex_search('MemTotal:\\s+([0-9]+)', '\\1')) | int // 1024)}) %}
+{% set nscore = namespace(cores=[], seen=[]) %}
+{% for cpu in cpus | sort %}
+{% if cpu not in nscore.seen %}
+{% set raw_sibs = acc.sibling_map[cpu | string] | default([cpu]) %}
+{% set sibs = raw_sibs | select('in', cpus) | list | sort %}
+{% if sibs | length == 0 %}{% set sibs = [cpu] %}{% endif %}
+{% set nscore.seen = nscore.seen + sibs %}
+{% set nscore.cores = nscore.cores + [sibs] %}
+{% endif %}
+{% endfor %}
+{% set acc.cores_by_node = acc.cores_by_node + [nscore.cores] %}
+{% endfor %}
+{% for cores in acc.cores_by_node %}
+{% for sibs in cores %}
+{% set acc.widths = acc.widths + [sibs | length] %}
+{% endfor %}
+{% endfor %}
+{% set host_threads = (acc.widths | max) if acc.widths else 1 %}
+{% set reserve = host_reserve_first_core | bool %}
+{% for cores in acc.cores_by_node %}
+{% if cores | length == 0 %}
+{% set acc.guest_cores = acc.guest_cores + [[]] %}
+{% elif reserve %}
+{% set acc.reserved = acc.reserved + [cores[0]] %}
+{% set acc.guest_cores = acc.guest_cores + [cores[1:]] %}
+{% else %}
+{% set acc.guest_cores = acc.guest_cores + [cores] %}
+{% endif %}
+{% endfor %}
+{% set usable_counts = acc.guest_cores | map('length') | list %}
+{% set cores_per_socket = (usable_counts | min) if usable_counts else 0 %}
+{% set numa_count = acc.guest_cores | length %}
+{% if vm_vcpus != 'auto' and numa_count > 0 and host_threads > 0 and ((vm_vcpus | int) % (numa_count * host_threads) == 0) %}
+{% set cores_per_socket = [cores_per_socket, (vm_vcpus | int) // (numa_count * host_threads)] | min %}
+{% endif %}
+{% for node_cores in acc.guest_cores %}
+{% for sibs in node_cores[:cores_per_socket] %}
+{% set cpuset = format_cpuset(sibs) %}
+{% for _thread in range(host_threads) %}
+{% set acc.pins = acc.pins + [{'vcpu': acc.vcpu, 'cpuset': cpuset}] %}
+{% set acc.vcpu = acc.vcpu + 1 %}
+{% endfor %}
+{% endfor %}
+{% endfor %}
+{% set reserved_cpus = acc.reserved | flatten %}
+{% for core in acc.reserved %}
+{% set acc.iothreadpins = acc.iothreadpins + [{'iothread': loop.index, 'cpuset': format_cpuset(core)}] %}
+{% endfor %}
+{% set emulatorpin = format_cpuset(reserved_cpus) if reserved_cpus else format_cpuset(acc.node_cpu_map.values() | list | flatten) %}
+{% set iothreads = [vm_iothreads | int, 1] | max %}
+{% set iothreadpins = acc.iothreadpins[:iothreads] %}
+{% if iothreadpins | length == 0 %}
+{% set iothreadpins = [{'iothread': 1, 'cpuset': emulatorpin}] %}
+{% endif %}
+{% set hp_names = hugepage_dirs.files | default([]) | map(attribute='path') | map('basename') | list %}
+{% set preferred_hp = 'hugepages-' ~ (hugepages_size_kb | string) ~ 'kB' %}
+{% if preferred_hp in hp_names %}
+{% set page_kb = hugepages_size_kb | int %}
+{% elif 'hugepages-1048576kB' in hp_names %}
+{% set page_kb = 1048576 %}
+{% elif 'hugepages-2048kB' in hp_names %}
+{% set page_kb = 2048 %}
+{% else %}
+{% set page_kb = hugepages_size_kb | int %}
+{% endif %}
+{% set page_mib = [page_kb // 1024, 1] | max %}
+{% set node_mib_list = acc.node_mem_mib.values() | list %}
+{% set min_node_mib = (node_mib_list | min) if node_mib_list else 0 %}
+{% set per_node_reserve = [hypervisor_reserve_min_gib_per_node | int * 1024, (hypervisor_reserve_gib | int * 1024) // [numa_count, 1] | max] | max %}
+{% if min_node_mib - per_node_reserve < page_mib %}
+{% set per_node_reserve = [hypervisor_reserve_min_gib_per_node | int * 1024, min_node_mib // 8] | max %}
+{% set per_node_reserve = [per_node_reserve, [0, min_node_mib - page_mib] | max] | min %}
+{% endif %}
+{% if vm_memory_mib != 'auto' %}
+{% set per_node_mib = ((vm_memory_mib | int) // [numa_count, 1] | max // page_mib) * page_mib %}
+{% else %}
+{% set per_node_mib = ((min_node_mib - per_node_reserve) // page_mib) * page_mib %}
+{% endif %}
+{% set per_node_mib = [page_mib, per_node_mib] | max %}
+{% set memory_mib = per_node_mib * numa_count %}
+{% for mnt in (ansible_mounts | default([])) | sort(attribute='mount', reverse=true) %}
+{% if (not acc.kvm_found) and kvm_base_dir.startswith(mnt.mount) %}
+{% set acc.kvm_avail = mnt.size_available | int %}
+{% set acc.kvm_found = true %}
+{% endif %}
+{% endfor %}
+{% set free_mib = acc.kvm_avail // 1024 // 1024 %}
+{% if vm_disk_size != 'auto' %}
+{% set disk_size = vm_disk_size %}
+{% else %}
+{% set preferred_mib = vm_disk_preferred_gib | int * 1024 %}
+{% set reserve_mib = vm_disk_reserve_gib | int * 1024 %}
+{% set usable = [1024, free_mib - reserve_mib] | max %}
+{% set disk_mib = [preferred_mib, usable] | min %}
+{% set disk_size = ((disk_mib // 1024) | string ~ 'G') if (disk_mib % 1024 == 0) else (disk_mib | string ~ 'M') %}
+{% endif %}
+{% if vm_tsc_frequency != 'auto' %}
+{% set tsc_hz = vm_tsc_frequency | int %}
+{% elif tsc_khz_slurp.content | default('') %}
+{% set tsc_hz = (tsc_khz_slurp.content | b64decode | trim | int) * 1000 %}
+{% else %}
+{% set mhz = cpuinfo_slurp.content | default('') | b64decode | regex_search('cpu MHz\\s*:\\s*([0-9.]+)', '\\1') %}
+{% set tsc_hz = ((mhz | float * 1000000) | round | int) if mhz else none %}
+{% endif %}
+{% set host_model = ansible_processor[2] | default(ansible_processor[-1] | default('unknown')) %}
+host:
+  model: {{ host_model | to_json }}
+  cpus: {{ ansible_processor_vcpus | int }}
+  sockets: {{ ansible_processor_count | int }}
+  cores_per_socket: {{ ansible_processor_cores | int }}
+  threads_per_core: {{ host_threads }}
+  numa_nodes: {{ numa_node_ids | to_json }}
+  numa_cpus: {{ acc.node_cpu_map | to_json }}
+  numa_memory_mib: {{ acc.node_mem_mib | to_json }}
+  hugepage_size_kb_available: {{ page_kb }}
+  disk_free_mib: {{ free_mib }}
+  tsc_frequency_hz: {{ tsc_hz | to_json }}
+guest:
+  vcpus: {{ acc.vcpu }}
+  sockets: {{ numa_count }}
+  cores_per_socket: {{ cores_per_socket }}
+  threads_per_core: {{ host_threads }}
+  numa_nodes: {{ numa_count }}
+  memory_mib: {{ memory_mib }}
+  numa_memory_mib: {{ per_node_mib }}
+  cpu_pins: {{ acc.pins | to_json }}
+  emulatorpin: {{ emulatorpin | to_json }}
+  iothreads: {{ iothreads }}
+  iothreadpins: {{ iothreadpins | to_json }}
+  iothreadpin: {{ (iothreadpins[0].cpuset if iothreadpins else emulatorpin) | to_json }}
+  hugepages_size_kb: {{ page_kb }}
+  hugepages_per_node: {{ (per_node_mib * 1024) // page_kb }}
+  hugepage_nodes: {{ numa_node_ids | to_json }}
+  tsc_frequency: {{ tsc_hz | to_json }}
+  disk_size: {{ disk_size | to_json }}
+  hypervisor_reserve_mib_per_node: {{ per_node_reserve }}
+summary:
+  - {{ ("Host: " ~ host_model) | to_json }}
+  - {{ ("Host CPUs: " ~ (ansible_processor_vcpus | string) ~ " (" ~ (ansible_processor_count | string) ~ " sockets, " ~ (ansible_processor_cores | string) ~ " cores/socket, " ~ (host_threads | string) ~ " threads)") | to_json }}
+  - {{ ("Host NUMA nodes: " ~ (numa_node_ids | string)) | to_json }}
+  - {{ ("Host memory/node MiB: " ~ (acc.node_mem_mib | string)) | to_json }}
+  - {{ ("Guest: " ~ (numa_count | string) ~ " sockets × " ~ (cores_per_socket | string) ~ " cores × " ~ (host_threads | string) ~ " threads = " ~ (acc.vcpu | string) ~ " vCPUs") | to_json }}
+  - {{ ("Guest memory: " ~ (memory_mib | string) ~ " MiB (" ~ (per_node_mib | string) ~ " MiB × " ~ (numa_count | string) ~ " NUMA cells)") | to_json }}
+  - {{ ("Hugepages: " ~ (((per_node_mib * 1024) // page_kb) | string) ~ " × " ~ (page_kb | string) ~ " KiB per node") | to_json }}
+  - {{ ("Emulator pin: " ~ emulatorpin) | to_json }}
+  - {{ ("IO thread pin: " ~ (iothreadpins[0].cpuset if iothreadpins else emulatorpin)) | to_json }}
+  - {{ ("TSC frequency: " ~ ((tsc_hz | default('not detected')) | string) ~ " Hz") | to_json }}
+  - {{ ("OS disk: " ~ disk_size ~ " (fs free " ~ (free_mib | string) ~ " MiB)") | to_json }}

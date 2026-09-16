@@ -3,116 +3,97 @@
 # Verify — validate VM matches expected SAP HANA configuration
 # ============================================================================
 
-- name: Verify VM virt type
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }} 'systemd-detect-virt'
-  register: virt_type
-  changed_when: false
+- name: Gather guest facts
+  ansible.builtin.setup:
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args | default(vm_ssh_opts) }}"
+    ansible_host_key_checking: false
+  register: guest_setup
 
 - name: Assert VM is KVM
   ansible.builtin.assert:
     that:
-      - virt_type.stdout is search('kvm')
-    fail_msg: "VM is not running under KVM (got: {{ virt_type.stdout }})"
+      - guest_setup.ansible_facts.ansible_virtualization_type is search('kvm')
+    fail_msg: "VM is not running under KVM (got: {{ guest_setup.ansible_facts.ansible_virtualization_type }})"
     success_msg: "VM running under KVM ✓"
 
-- name: Gather guest CPU topology
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }} 'lscpu'
-  register: guest_lscpu
-  changed_when: false
-
-- name: Display guest CPU topology
+- name: Display guest CPU facts
   ansible.builtin.debug:
-    var: guest_lscpu.stdout_lines
+    msg:
+      - "vCPUs: {{ guest_setup.ansible_facts.ansible_processor_vcpus }}"
+      - "Sockets: {{ guest_setup.ansible_facts.ansible_processor_count }}"
+      - "Cores: {{ guest_setup.ansible_facts.ansible_processor_cores }}"
 
 - name: Assert correct vCPU count
   ansible.builtin.assert:
     that:
-      - guest_lscpu.stdout is regex('CPU\\(s\\):\\s+' ~ (vm_vcpus | string) ~ '\\b')
+      - (guest_setup.ansible_facts.ansible_processor_vcpus | int) == (vm_vcpus | int)
     fail_msg: "Expected {{ vm_vcpus }} vCPUs"
     success_msg: "{{ vm_vcpus }} vCPUs ✓"
 
-- name: Gather guest NUMA topology
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }} 'numactl --hardware'
-  register: guest_numa
-  changed_when: false
-
-- name: Display guest NUMA topology
-  ansible.builtin.debug:
-    var: guest_numa.stdout_lines
+- name: List guest NUMA nodes
+  ansible.builtin.find:
+    paths: /sys/devices/system/node
+    patterns: "node[0-9]*"
+    file_type: directory
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args | default(vm_ssh_opts) }}"
+    ansible_host_key_checking: false
+  register: guest_numa_dirs
 
 - name: Assert NUMA node count
   ansible.builtin.assert:
     that:
-      - guest_numa.stdout is regex('available:\\s+' ~ (vm_numa_nodes | string) ~ '\\s+nodes')
+      - (guest_numa_dirs.files | length) == (vm_numa_nodes | int)
     fail_msg: "Expected {{ vm_numa_nodes }} NUMA nodes"
     success_msg: "{{ vm_numa_nodes }} NUMA nodes ✓"
 
-- name: Gather guest memory
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }} 'free -h'
-  register: guest_mem
-  changed_when: false
-
 - name: Display guest memory
   ansible.builtin.debug:
-    var: guest_mem.stdout_lines
+    msg: "MemTotal: {{ guest_setup.ansible_facts.ansible_memtotal_mb }} MiB"
 
-- name: Gather guest disk
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }} 'lsblk; echo "---"; df -h /'
-  register: guest_disk
-  changed_when: false
-
-- name: Display guest disk
+- name: Display guest root filesystem
   ansible.builtin.debug:
-    var: guest_disk.stdout_lines
+    msg: "{{ guest_setup.ansible_facts.ansible_mounts | selectattr('mount', 'equalto', '/') | list }}"
 
-- name: Verify host-side CPU pinning
-  ansible.builtin.command: virsh vcpupin {{ vm_name }}
+- name: Read domain XML for CPU pinning
+  community.libvirt.virt:
+    command: get_xml
+    name: "{{ vm_name }}"
   register: vcpupin_info
-  changed_when: false
 
-- name: Display CPU pinning
+- name: Display CPU pinning from domain XML
   ansible.builtin.debug:
-    var: vcpupin_info.stdout_lines
+    var: vcpupin_info.get_xml
 
-- name: Verify host-side NUMA placement (numastat)
-  ansible.builtin.shell: |
-    QEMU_PID=$(pgrep -f 'qemu.*{{ vm_name }}' | head -1)
-    if [ -n "$QEMU_PID" ]; then
-      numastat -p $QEMU_PID
-    else
-      echo "QEMU process not found"
-    fi
-  register: numastat_info
-  changed_when: false
-
-- name: Display NUMA placement
-  ansible.builtin.debug:
-    var: numastat_info.stdout_lines
-
-- name: Verify hugepage usage
-  ansible.builtin.shell: |
-    echo "=== Hugepage usage after VM start ==="
-    for n in {{ hugepage_nodes | join(' ') }}; do
-      echo "Node $n:"
-      echo "  total: $(cat /sys/devices/system/node/node${n}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages)"
-      echo "  free:  $(cat /sys/devices/system/node/node${n}/hugepages/hugepages-{{ hugepages_size_kb }}kB/free_hugepages)"
-    done
+- name: Read hugepage usage after VM start
+  ansible.builtin.slurp:
+    src: "/sys/devices/system/node/node{{ item.0 }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/{{ item.1 }}"
+  loop: "{{ hugepage_nodes | product(['nr_hugepages', 'free_hugepages']) | list }}"
+  loop_control:
+    label: "node{{ item.0 }}/{{ item.1 }}"
   register: hp_usage
-  changed_when: false
 
 - name: Display hugepage usage
   ansible.builtin.debug:
-    var: hp_usage.stdout_lines
+    msg: >-
+      Node {{ item.item.0 }} {{ item.item.1 }}:
+      {{ item.content | b64decode | trim }}
+  loop: "{{ hp_usage.results }}"
+  loop_control:
+    label: "node{{ item.item.0 }}/{{ item.item.1 }}"
 
 - name: "=== SUMMARY ==="
   ansible.builtin.debug:
@@ -125,6 +106,4 @@
       - "  Memory:     {{ vm_memory_mib }} MiB"
       - "  NUMA nodes: {{ vm_numa_nodes }}"
       - "  Disk:       {{ vm_disk_size }}"
-      - "  SSH:        ssh root@{{ vm_ip }}"
-      - "  Password:   *****"
       - "============================================"

@@ -4,29 +4,82 @@
 # Follows Red Hat SAP HANA on RHV/KVM (1 GiB hugepages, first core/node reserved)
 # ============================================================================
 
-- name: Discover hypervisor topology
-  ansible.builtin.script: >
-    {{ role_path }}/files/discover_hana_topology.py
-    --reserve-gib {{ hypervisor_reserve_gib }}
-    --reserve-min-gib-per-node {{ hypervisor_reserve_min_gib_per_node }}
-    --kvm-dir {{ kvm_base_dir }}
-    --disk-preferred-gib {{ vm_disk_preferred_gib }}
-    --disk-reserve-gib {{ vm_disk_reserve_gib }}
-    --hugepage-size-kb {{ hugepages_size_kb }}
-    --iothreads {{ vm_iothreads }}
-    {% if not (host_reserve_first_core | bool) %}--no-reserve-first-core{% endif %}
-    {% if vm_vcpus != 'auto' %}--vcpus {{ vm_vcpus }}{% endif %}
-    {% if vm_memory_mib != 'auto' %}--memory-mib {{ vm_memory_mib }}{% endif %}
-    {% if vm_disk_size != 'auto' %}--disk-size {{ vm_disk_size }}{% endif %}
-    {% if vm_tsc_frequency != 'auto' %}--tsc-hz {{ vm_tsc_frequency }}{% endif %}
-  args:
-    executable: /usr/bin/python3
-  register: hana_topo_raw
-  changed_when: false
+- name: List NUMA node directories
+  ansible.builtin.find:
+    paths: /sys/devices/system/node
+    patterns: "node[0-9]*"
+    file_type: directory
+  register: numa_dirs
 
-- name: Parse discovered topology
+- name: Set NUMA node IDs
   ansible.builtin.set_fact:
-    hana_topology: "{{ hana_topo_raw.stdout | from_json }}"
+    numa_node_ids: "{{ numa_dirs.files | map(attribute='path') | map('basename') | map('regex_replace', '^node', '') | map('int') | sort }}"
+
+- name: Fail if no NUMA nodes were found
+  ansible.builtin.assert:
+    that:
+      - numa_node_ids | length > 0
+    fail_msg: "No NUMA nodes found under /sys/devices/system/node"
+
+- name: Read NUMA CPU lists
+  ansible.builtin.slurp:
+    src: "/sys/devices/system/node/node{{ item }}/cpulist"
+  loop: "{{ numa_node_ids }}"
+  register: numa_cpulist_slurp
+
+- name: Read NUMA memory info
+  ansible.builtin.slurp:
+    src: "/sys/devices/system/node/node{{ item }}/meminfo"
+  loop: "{{ numa_node_ids }}"
+  register: numa_meminfo_slurp
+
+- name: List present CPUs
+  ansible.builtin.find:
+    paths: /sys/devices/system/cpu
+    patterns: "cpu[0-9]*"
+    file_type: directory
+  register: cpu_dirs
+
+- name: Read SMT sibling lists
+  ansible.builtin.slurp:
+    src: "{{ item.path }}/topology/thread_siblings_list"
+  loop: "{{ cpu_dirs.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: cpu_sibling_slurp
+  failed_when: false
+
+- name: List hugepage sizes
+  ansible.builtin.find:
+    paths: /sys/kernel/mm/hugepages
+    patterns: "hugepages-*kB"
+    file_type: directory
+  register: hugepage_dirs
+
+- name: Check host TSC sysfs
+  ansible.builtin.stat:
+    path: /sys/devices/system/cpu/cpu0/tsc_freq_khz
+  register: tsc_khz_file
+
+- name: Read host TSC frequency
+  ansible.builtin.slurp:
+    src: /sys/devices/system/cpu/cpu0/tsc_freq_khz
+  register: tsc_khz_slurp
+  when: tsc_khz_file.stat.exists
+
+- name: Clear TSC slurp when sysfs is missing
+  ansible.builtin.set_fact:
+    tsc_khz_slurp: {}
+  when: not tsc_khz_file.stat.exists
+
+- name: Read cpuinfo for TSC fallback
+  ansible.builtin.slurp:
+    src: /proc/cpuinfo
+  register: cpuinfo_slurp
+
+- name: Derive guest topology
+  ansible.builtin.set_fact:
+    hana_topology: "{{ lookup('template', 'hana_topology.j2') | from_yaml }}"
 
 - name: Apply discovered guest configuration
   ansible.builtin.set_fact:

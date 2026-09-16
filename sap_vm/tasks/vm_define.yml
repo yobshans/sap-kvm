@@ -3,16 +3,17 @@
 # VM Define — create and start the KVM domain
 # ============================================================================
 
-- name: Check if VM is already defined
-  ansible.builtin.command: virsh dominfo {{ vm_name }}
-  register: vm_info
-  changed_when: false
-  failed_when: false
+- name: List defined VMs
+  community.libvirt.virt:
+    command: list_vms
+  register: defined_vms
 
-- name: Check VM state
-  ansible.builtin.command: virsh domstate {{ vm_name }}
+- name: Get VM status
+  community.libvirt.virt:
+    command: status
+    name: "{{ vm_name }}"
   register: vm_state
-  changed_when: false
+  when: vm_name in (defined_vms.list_vms | default([]))
   failed_when: false
 
 - name: Generate VM domain XML
@@ -20,33 +21,47 @@
     src: vm-domain.xml.j2
     dest: "{{ kvm_base_dir }}/{{ vm_name }}.xml"
     mode: "0644"
-  when: vm_info.rc != 0 or (vm_state.rc == 0 and 'running' not in vm_state.stdout)
+  when: >
+    vm_name not in (defined_vms.list_vms | default([]))
+    or (vm_state.status | default('')) != 'running'
+
+- name: Read domain XML
+  ansible.builtin.slurp:
+    src: "{{ kvm_base_dir }}/{{ vm_name }}.xml"
+  register: vm_xml_file
+  when: >
+    vm_name not in (defined_vms.list_vms | default([]))
+    or (vm_state.status | default('')) != 'running'
 
 - name: Define VM from XML
-  ansible.builtin.command: virsh define {{ kvm_base_dir }}/{{ vm_name }}.xml
-  when: vm_info.rc != 0 or (vm_state.rc == 0 and 'running' not in vm_state.stdout)
-  changed_when: true
+  community.libvirt.virt:
+    command: define
+    xml: "{{ vm_xml_file.content | b64decode }}"
+  when: >
+    vm_name not in (defined_vms.list_vms | default([]))
+    or (vm_state.status | default('')) != 'running'
 
 - name: Start VM
-  ansible.builtin.command: virsh start {{ vm_name }}
+  community.libvirt.virt:
+    name: "{{ vm_name }}"
+    state: running
   register: vm_start
-  when: vm_state.rc != 0 or 'running' not in vm_state.stdout
-  changed_when: vm_start.rc == 0
+  when: (vm_state.status | default('')) != 'running'
   failed_when: false
 
 - name: Use libvirt host TSC frequency when the requested value is rejected
   when:
     - not (vm_start.skipped | default(false))
-    - vm_start.rc | default(0) != 0
-    - (vm_start.stderr | default('')) is search('TSC frequency')
+    - vm_start.failed | default(false)
+    - (vm_start.msg | default('') | string ~ vm_start.exception | default('') | string) is search('TSC frequency')
   block:
     - name: Parse host TSC frequency from libvirt
       ansible.builtin.set_fact:
-        vm_tsc_frequency: "{{ vm_start.stderr | regex_search('host frequency ([0-9]+) Hz', '\\1') }}"
+        vm_tsc_frequency: "{{ vm_start.msg | regex_search('host frequency ([0-9]+) Hz', '\\1') }}"
 
     - name: Fail if libvirt did not advertise a host TSC frequency
       ansible.builtin.fail:
-        msg: "{{ vm_start.stderr }}"
+        msg: "{{ vm_start.msg }}"
       when: not (vm_tsc_frequency | default('') | string | regex_search('^[0-9]+$'))
 
     - name: Show corrected TSC frequency
@@ -59,55 +74,59 @@
         dest: "{{ kvm_base_dir }}/{{ vm_name }}.xml"
         mode: "0644"
 
+    - name: Read corrected domain XML
+      ansible.builtin.slurp:
+        src: "{{ kvm_base_dir }}/{{ vm_name }}.xml"
+      register: vm_xml_retry
+
     - name: Redefine VM with host TSC frequency
-      ansible.builtin.command: virsh define {{ kvm_base_dir }}/{{ vm_name }}.xml
-      changed_when: true
+      community.libvirt.virt:
+        command: define
+        xml: "{{ vm_xml_retry.content | b64decode }}"
 
     - name: Start VM after TSC correction
-      ansible.builtin.command: virsh start {{ vm_name }}
+      community.libvirt.virt:
+        name: "{{ vm_name }}"
+        state: running
       register: vm_start_retry
-      changed_when: true
 
 - name: Fail if the VM did not start
   ansible.builtin.fail:
-    msg: "{{ vm_start.stderr | default('virsh start failed') }}"
+    msg: "{{ vm_start.msg | default('failed to start VM') }}"
   when:
     - not (vm_start.skipped | default(false))
-    - vm_start.rc | default(0) != 0
+    - vm_start.failed | default(false)
     - vm_start_retry is not defined
 
-
 - name: Set VM to autostart
-  ansible.builtin.command: virsh autostart {{ vm_name }}
-  changed_when: false
+  community.libvirt.virt:
+    name: "{{ vm_name }}"
+    autostart: true
 
 - name: Display VM info
-  ansible.builtin.command: virsh dominfo {{ vm_name }}
+  community.libvirt.virt:
+    command: info
+    name: "{{ vm_name }}"
   register: vm_running_info
-  changed_when: false
 
 - name: Show VM info
   ansible.builtin.debug:
-    var: vm_running_info.stdout_lines
+    var: vm_running_info
 
-- name: Wait for VM to get an IP address (up to 120s)
-  ansible.builtin.shell: |
-    for i in $(seq 1 40); do
-      IP=$(virsh domifaddr {{ vm_name }} 2>/dev/null | grep -oP '192\.168\.\d+\.\d+')
-      if [ -n "$IP" ]; then
-        echo "$IP"
-        exit 0
-      fi
-      sleep 3
-    done
-    echo "TIMEOUT"
-    exit 1
-  register: vm_ip_result
-  changed_when: false
+- name: Wait for VM DHCP lease
+  community.libvirt.virt:
+    command: get_ifaddresses
+    name: "{{ vm_name }}"
+    flags:
+      - lease
+  register: vm_ifs
+  retries: 40
+  delay: 3
+  until: (vm_ifs | to_json) is search('192\\.168\\.')
 
 - name: Set VM IP fact
   ansible.builtin.set_fact:
-    vm_ip: "{{ vm_ip_result.stdout | trim }}"
+    vm_ip: "{{ vm_ifs | to_json | regex_search('192\\.168\\.\\d+\\.\\d+') }}"
 
 - name: Display VM IP
   ansible.builtin.debug:

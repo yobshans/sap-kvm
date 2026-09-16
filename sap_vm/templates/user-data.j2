@@ -8,24 +8,44 @@ ssh_pwauth: true
 users:
   - name: root
     lock_passwd: false
-    hashed_passwd: '{{ hashed_pw.stdout }}'
     shell: /bin/bash
 
 chpasswd:
   expire: false
-  list: |
-    root:{{ vm_root_password }}
+  users:
+    - name: root
+      password: "{{ vm_root_password }}"
+      type: text
 
 write_files:
-  - path: /etc/ssh/sshd_config.d/99-sap.conf
+  - path: /etc/ssh/sshd_config.d/00-sap.conf
     permissions: "0644"
     content: |
       PermitRootLogin yes
       PasswordAuthentication yes
+      KbdInteractiveAuthentication yes
+
+yum_repos:
+{% for repo in vm_repos %}
+  {{ repo.name }}:
+    name: {{ repo.description }}
+    baseurl: {{ repo.baseurl }}
+    enabled: true
+    gpgcheck: false
+    skip_if_unavailable: true
+{% endfor %}
+
+packages:
+  - qemu-guest-agent
+{% for pkg in vm_packages %}
+  - {{ pkg }}
+{% endfor %}
 
 runcmd:
   - passwd -u root || true
+  - sed -i 's/^[[:space:]]*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-redhat.conf
   - systemctl enable --now sshd
   - systemctl reload sshd || systemctl restart sshd || true
+  - systemctl enable --now qemu-guest-agent || true
   - growpart /dev/vda 4 || true
   - xfs_growfs / || resize2fs /dev/vda4 || true

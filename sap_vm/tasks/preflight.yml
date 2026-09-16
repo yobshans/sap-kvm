@@ -8,47 +8,50 @@
     name:
       - qemu-kvm
       - libvirt
-      - virt-install
-      - libguestfs-tools
-      - guestfs-tools
-      - genisoimage
       - python3
+      - python3-libvirt
+      - python3-lxml
       - numactl
       - sshpass
     state: present
 
+- name: Ensure pycdlib for cloud-init ISO creation
+  block:
+    - name: Install pycdlib from RPM
+      ansible.builtin.dnf:
+        name: python3-pycdlib
+        state: present
+  rescue:
+    - name: Install pycdlib with pip
+      ansible.builtin.pip:
+        name: pycdlib
+
+- name: Check KVM device
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: kvm_dev
+
 - name: Validate KVM host
-  ansible.builtin.command: virt-host-validate qemu
-  register: virt_validate
-  changed_when: false
-  failed_when: "'FAIL' in virt_validate.stdout"
+  ansible.builtin.assert:
+    that:
+      - kvm_dev.stat.exists
+      - ansible_virtualization_role | default('host') != 'guest' or kvm_dev.stat.exists
+    fail_msg: "/dev/kvm is missing; this host cannot run KVM guests"
+    success_msg: "KVM device /dev/kvm is present"
 
-- name: Display host validation
+- name: Display host CPU facts
   ansible.builtin.debug:
-    var: virt_validate.stdout_lines
+    msg:
+      - "Model: {{ ansible_processor[2] | default(ansible_processor[-1]) }}"
+      - "vCPUs: {{ ansible_processor_vcpus }}"
+      - "Cores: {{ ansible_processor_cores }}"
+      - "Sockets: {{ ansible_processor_count }}"
 
-- name: Gather host CPU info
-  ansible.builtin.command: lscpu
-  register: lscpu_out
-  changed_when: false
-
-- name: Gather host NUMA topology
-  ansible.builtin.command: numactl --hardware
-  register: numactl_out
-  changed_when: false
-
-- name: Display host NUMA topology
+- name: Display host memory facts
   ansible.builtin.debug:
-    var: numactl_out.stdout_lines
-
-- name: Gather host memory
-  ansible.builtin.command: free -h
-  register: free_out
-  changed_when: false
-
-- name: Display host memory
-  ansible.builtin.debug:
-    var: free_out.stdout_lines
+    msg:
+      - "MemTotal: {{ ansible_memtotal_mb }} MiB"
+      - "MemFree: {{ ansible_memfree_mb }} MiB"
 
 - name: Ensure libvirtd is running
   ansible.builtin.systemd:
@@ -57,16 +60,11 @@
     enabled: true
 
 - name: Ensure default network is active
-  ansible.builtin.command: virsh net-info {{ vm_network }}
-  register: net_info
-  changed_when: false
-  failed_when: false
-
-- name: Start default network if inactive
-  ansible.builtin.command: virsh net-start {{ vm_network }}
-  when: "'inactive' in net_info.stdout"
-  changed_when: true
+  community.libvirt.virt_net:
+    name: "{{ vm_network }}"
+    state: active
 
 - name: Autostart default network
-  ansible.builtin.command: virsh net-autostart {{ vm_network }}
-  changed_when: false
+  community.libvirt.virt_net:
+    name: "{{ vm_network }}"
+    autostart: true
