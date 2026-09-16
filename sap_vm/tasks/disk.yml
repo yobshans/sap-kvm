@@ -33,32 +33,84 @@
     path: "{{ vm_disk_path }}"
   register: vm_disk
 
-- name: Copy guest image to VM disk (reflink if supported)
-  ansible.builtin.shell: >
-    cp --reflink=auto
-    {{ kvm_base_dir }}/{{ guest_image_filename }}
-    {{ vm_disk_path }}
+- name: Copy guest image to VM disk
+  ansible.builtin.copy:
+    src: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
+    dest: "{{ vm_disk_path }}"
+    remote_src: true
+    mode: "0644"
   when: not vm_disk.stat.exists
-  changed_when: true
+
+- name: Gather libvirt storage pool facts
+  community.libvirt.virt_pool:
+    command: facts
+
+- name: Use the pool that already owns kvm_base_dir
+  ansible.builtin.set_fact:
+    libvirt_pool: "{{ existing_kvm_pools[0] }}"
+  vars:
+    existing_kvm_pools: "{{ ansible_libvirt_pools | dict2items | selectattr('value.path', 'defined') | selectattr('value.path', 'equalto', kvm_base_dir) | map(attribute='key') | list }}"
+  when: existing_kvm_pools | length > 0
+
+- name: Define libvirt directory pool when none covers kvm_base_dir
+  community.libvirt.virt_pool:
+    name: "{{ libvirt_pool }}"
+    state: present
+    xml: "{{ lookup('template', 'libvirt-pool.xml.j2') }}"
+  when: libvirt_pool not in ansible_libvirt_pools
+
+- name: Build libvirt directory pool
+  community.libvirt.virt_pool:
+    command: build
+    name: "{{ libvirt_pool }}"
+  register: libvirt_pool_build
+  when: libvirt_pool not in ansible_libvirt_pools
+  failed_when:
+    - libvirt_pool_build is failed
+    - libvirt_pool_build.msg | default('') is not search('already')
+
+- name: Start libvirt directory pool
+  community.libvirt.virt_pool:
+    name: "{{ libvirt_pool }}"
+    state: active
+
+- name: Autostart libvirt directory pool
+  community.libvirt.virt_pool:
+    name: "{{ libvirt_pool }}"
+    autostart: true
+
+- name: Refresh libvirt directory pool
+  community.libvirt.virt_pool:
+    command: refresh
+    name: "{{ libvirt_pool }}"
+
+- name: Show selected libvirt pool
+  ansible.builtin.debug:
+    msg: "Using libvirt pool '{{ libvirt_pool }}' for {{ kvm_base_dir }}"
 
 - name: Resize VM disk to {{ vm_disk_size }}
-  ansible.builtin.command: >
-    qemu-img resize {{ vm_disk_path }} {{ vm_disk_size }}
+  community.libvirt.virt_volume:
+    pool: "{{ libvirt_pool }}"
+    state: present
+    xml: |
+      <volume>
+        <name>{{ vm_name }}.qcow2</name>
+        <capacity unit="{{ vm_disk_size[-1] | upper }}">{{ vm_disk_size[:-1] }}</capacity>
+        <target>
+          <format type="qcow2"/>
+          <path>{{ vm_disk_path }}</path>
+        </target>
+      </volume>
   when: not vm_disk.stat.exists
-  changed_when: true
 
-- name: Set root password via virt-customize
-  ansible.builtin.command: >
-    virt-customize -a {{ vm_disk_path }}
-    --root-password password:{{ vm_root_password }}
-  when: not vm_disk.stat.exists
-  changed_when: true
-
-- name: Verify disk image
-  ansible.builtin.command: qemu-img info {{ vm_disk_path }}
+- name: Stat VM disk after prepare
+  ansible.builtin.stat:
+    path: "{{ vm_disk_path }}"
   register: disk_info
-  changed_when: false
 
 - name: Display disk info
   ansible.builtin.debug:
-    var: disk_info.stdout_lines
+    msg:
+      - "path: {{ vm_disk_path }}"
+      - "size: {{ disk_info.stat.size }} bytes"
+      - "requested: {{ vm_disk_size }}"

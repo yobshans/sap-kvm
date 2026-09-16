@@ -1,77 +1,71 @@
 ---
 # ============================================================================
-# Post-boot — configure repos, SSH, and guest OS inside the VM
+# Post-boot — wait for the guest and add it to the in-memory inventory
+# Guest repos, packages, SSH, and filesystem grow are applied by cloud-init.
+#
+# 192.168.122.0/24 is libvirt NAT on the hypervisor. A remote controller has
+# no route there, so guest SSH jumps through kvm_host unless connection=local.
 # ============================================================================
 
-- name: Wait for SSH password login
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }}
-    'echo ok'
-  register: ssh_ready
-  retries: 24
-  delay: 5
-  until: ssh_ready.rc == 0
-  changed_when: false
+- name: Set guest SSH jump through the hypervisor
+  ansible.builtin.set_fact:
+    guest_ssh_via_hypervisor: "{{ (ansible_connection | default('ssh')) != 'local' }}"
+    guest_ssh_jump_host: "{{ ansible_host | default(inventory_hostname) }}"
+    guest_ssh_jump_user: "{{ ansible_user | default(ansible_ssh_user) | default('root') }}"
+    guest_ssh_jump_port: "{{ ansible_port | default(22) }}"
 
-- name: Wait for cloud-init to finish inside VM
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }}
-    'cloud-init status --wait 2>/dev/null || sleep 30; echo done'
-  changed_when: false
-  register: cloud_init_wait
-  timeout: 300
+- name: Render guest SSH args
+  ansible.builtin.set_fact:
+    guest_ssh_common_args: "{{ lookup('template', 'guest_ssh_args.j2') | trim }}"
+  no_log: true
 
-- name: Configure yum repos inside VM
-  ansible.builtin.shell: |
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }} root@{{ vm_ip }} bash -s << 'REPO_EOF'
-    cat > /etc/yum.repos.d/{{ item.name }}.repo << 'EOF'
-    [{{ item.name }}]
-    name={{ item.description }}
-    baseurl={{ item.baseurl }}
-    enabled=1
-    gpgcheck=0
-    skip_if_unavailable=1
-    EOF
-    REPO_EOF
-  loop: "{{ vm_repos }}"
-  changed_when: true
-
-- name: Verify repos are configured
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }}
-    'dnf repolist'
-  register: repo_list
-  changed_when: false
-
-- name: Display configured repos
+- name: Show guest SSH path
   ansible.builtin.debug:
-    var: repo_list.stdout_lines
+    msg: >-
+      {{ 'Controller will SSH to guest ' ~ vm_ip
+         ~ ' by jumping through '
+         ~ guest_ssh_jump_user ~ '@' ~ guest_ssh_jump_host }}
+  when: guest_ssh_via_hypervisor | bool
 
-- name: Install guest packages for HCMT and verification
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }}
-    'dnf install -y {{ vm_packages | join(" ") }}'
-  register: vm_pkg_install
-  changed_when: "'Installed' in vm_pkg_install.stdout or 'Complete' in vm_pkg_install.stdout"
-  timeout: 600
+- name: Add guest to in-memory inventory
+  ansible.builtin.add_host:
+    name: "{{ vm_name }}_guest"
+    groups: sap_guests
+    ansible_host: "{{ vm_ip }}"
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+    ansible_connection: ssh
+  no_log: true
 
-- name: Ensure PermitRootLogin yes in VM
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }}
-    'printf "%s\n" "PermitRootLogin yes" "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/99-sap.conf &&
-     systemctl reload sshd || systemctl restart sshd'
-  changed_when: true
+- name: Wait until guest accepts password SSH
+  ansible.builtin.wait_for_connection:
+    delay: 20
+    sleep: 10
+    timeout: 360
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
 
-- name: Grow root filesystem to fill disk
-  ansible.builtin.shell: >
-    sshpass -p '{{ vm_root_password }}' ssh {{ vm_ssh_opts }}
-    root@{{ vm_ip }}
-    'growpart /dev/vda 4 2>/dev/null || true;
-     xfs_growfs / 2>/dev/null || resize2fs /dev/vda4 2>/dev/null || true'
-  changed_when: false
-  failed_when: false
+- name: Wait for cloud-init boot finished marker
+  ansible.builtin.wait_for:
+    path: /var/lib/cloud/instance/boot-finished
+    timeout: 300
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false

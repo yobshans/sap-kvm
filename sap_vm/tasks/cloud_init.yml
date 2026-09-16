@@ -9,12 +9,6 @@
     state: directory
     mode: "0755"
 
-- name: Generate hashed root password
-  ansible.builtin.command: openssl passwd -6 '{{ vm_root_password }}'
-  register: hashed_pw
-  changed_when: false
-  no_log: true
-
 - name: Write cloud-init user-data
   ansible.builtin.template:
     src: user-data.j2
@@ -27,19 +21,39 @@
     dest: "{{ cloud_init_dir }}/meta-data"
     mode: "0644"
 
-- name: Check if cloud-init ISO exists
-  ansible.builtin.stat:
+- name: Read cloud-init user-data
+  ansible.builtin.slurp:
+    src: "{{ cloud_init_dir }}/user-data"
+  register: userdata_file
+
+- name: Read cloud-init meta-data
+  ansible.builtin.slurp:
+    src: "{{ cloud_init_dir }}/meta-data"
+  register: metadata_file
+
+- name: Remove stale cloud-init volume
+  community.libvirt.virt_volume:
+    pool: "{{ libvirt_pool }}"
+    state: absent
+    name: "{{ cloud_init_iso | basename }}"
+  failed_when: false
+
+- name: Remove stale cloud-init ISO
+  ansible.builtin.file:
     path: "{{ cloud_init_iso }}"
-  register: cidata_iso
+    state: absent
+
+- name: Refresh libvirt pool after ISO removal
+  community.libvirt.virt_pool:
+    command: refresh
+    name: "{{ libvirt_pool }}"
+  failed_when: false
 
 - name: Generate cloud-init ISO
-  ansible.builtin.command: >
-    genisoimage
-    -output {{ cloud_init_iso }}
-    -volid cidata
-    -joliet
-    -rock
-    {{ cloud_init_dir }}/user-data
-    {{ cloud_init_dir }}/meta-data
-  when: not cidata_iso.stat.exists
-  changed_when: true
+  community.libvirt.virt_volume:
+    pool: "{{ libvirt_pool }}"
+    command: create_cidata_cdrom
+    name: "{{ cloud_init_iso | basename }}"
+    cloudinit_config:
+      USERDATA: "{{ userdata_file.content | b64decode | from_yaml }}"
+      METADATA: "{{ metadata_file.content | b64decode | from_yaml }}"

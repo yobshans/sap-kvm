@@ -56,6 +56,8 @@ hugepage_nodes: auto
 
 # --- Storage ---
 kvm_base_dir: /home/kvm
+# Used only when no existing pool already has this target path (this host has pool "kvm")
+libvirt_pool: sap-kvm
 guest_image_filename: "rhel-guest-image-10.2-20260825.0.x86_64.qcow2"
 guest_image_url: "https://download-01.beak-001.prod.iad2.dc.redhat.com/brewroot/packages/rhel-guest-image/10.2/20260825.0/images/rhel-guest-image-10.2-20260825.0.x86_64.qcow2"
 vm_disk_size: auto                     # preferred OS disk, reduced to free space if needed
@@ -65,7 +67,7 @@ vm_disk_path: "{{ kvm_base_dir }}/{{ vm_name }}.qcow2"
 
 # --- Cloud-init ---
 cloud_init_dir: "{{ kvm_base_dir }}/cloud-init"
-cloud_init_iso: "{{ cloud_init_dir }}/{{ vm_name }}-cidata.iso"
+cloud_init_iso: "{{ kvm_base_dir }}/{{ vm_name }}-cidata.iso"
 
 # --- Networking ---
 vm_network: default

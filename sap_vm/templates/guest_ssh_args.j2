@@ -1,0 +1,5 @@
+{{ vm_ssh_opts }}
+{%- if guest_ssh_via_hypervisor | bool %}
+{%- set jump_pass = ansible_ssh_pass | default(ansible_password) | default('') %}
+ -o ProxyCommand="{% if jump_pass | length > 0 %}sshpass -p '{{ jump_pass | replace("'", "'\"'\"'") }}' {% endif %}ssh -W %h:%p -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null{% if jump_pass | length > 0 %} -o PreferredAuthentications=password -o PubkeyAuthentication=no{% endif %} -p {{ guest_ssh_jump_port }} {{ guest_ssh_jump_user }}@{{ guest_ssh_jump_host }}"
+{%- endif %}

@@ -9,8 +9,9 @@ the **`kvm_host`** inventory group (this machine or a remote hypervisor).
 
 ## How VM size is calculated
 
-Discovery is `files/discover_hana_topology.py`. Results are applied as Ansible
-facts and written to `/home/kvm/<vm_name>-topology.json`.
+Discovery reads sysfs with Ansible (`find`, `slurp`) and renders
+`templates/hana_topology.j2`. Results are applied as facts and written to
+`/home/kvm/<vm_name>-topology.json`.
 
 Set a variable to `auto` (the default) to derive it. Pass a concrete extra-var
 to override; pinning still comes from the live host topology.
@@ -73,10 +74,17 @@ The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
 ## Requirements
 
 - SSH (or local) access to the KVM hypervisor, with sudo (`become: true`).
+- Ansible collections from `collections/requirements.yml`:
+  `ansible-galaxy collection install -r collections/requirements.yml`
 - `vm_root_password` is **required** and is not stored in git.
 - Guest image at `kvm_base_dir` / `guest_image_filename`, or
   `-e download_guest_image=true`.
 - Inventory file `inventory_vm.ini` with a single host in `[kvm_host]`.
+
+Tasks use Ansible modules (`community.libvirt.virt`, `community.general.iso_create`,
+`dnf`, `slurp`, `setup`) rather than `command` / `shell` or custom Python.
+Guest yum repos, packages, SSH, and filesystem grow are applied by cloud-init
+on first boot.
 
 ## Inventory
 
