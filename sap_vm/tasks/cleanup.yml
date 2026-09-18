@@ -39,3 +39,9 @@
   ansible.builtin.file:
     path: "{{ cloud_init_iso }}"
     state: absent
+
+- name: Remove guest hostname from hypervisor /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} sap_vm {{ vm_name }}"
+    state: absent
