@@ -19,6 +19,13 @@
     guest_ssh_common_args: "{{ lookup('template', 'guest_ssh_args.j2') | trim }}"
   no_log: true
 
+- name: Add guest hostname to hypervisor /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} sap_vm {{ vm_name }}"
+    block: "{{ vm_ip }} {{ vm_fqdn }} {{ vm_hostname }}"
+  when: vm_ip | default('') | length > 0
+
 - name: Show guest SSH path
   ansible.builtin.debug:
     msg: >-

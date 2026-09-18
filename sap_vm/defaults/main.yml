@@ -6,6 +6,8 @@
 # --- VM identity ---
 vm_name: sap-kvm-vm
 vm_hostname: sap-kvm-vm
+vm_domain: lab.eng.tlv2.redhat.com
+vm_fqdn: "{{ vm_hostname }}.{{ vm_domain }}"
 # Root password is not stored in git. Required at runtime:
 #   ansible-playbook ... -e vm_root_password='...'
 # Non-interactive SSH into the guest (never prompt for a password)
