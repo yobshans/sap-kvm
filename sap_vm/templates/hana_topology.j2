@@ -46,7 +46,8 @@
 {% set cpus = expand_cpus(numa_cpulist_slurp.results[loop.index0].content | b64decode | trim) | from_json %}
 {% set acc.node_cpu_map = acc.node_cpu_map | combine({(node | string): cpus}) %}
 {% set mem_text = numa_meminfo_slurp.results[loop.index0].content | b64decode %}
-{% set acc.node_mem_mib = acc.node_mem_mib | combine({(node | string): ((mem_text | regex_search('MemTotal:\\s+([0-9]+)', '\\1')) | int // 1024)}) %}
+{% set mem_kb = (mem_text | regex_findall('MemTotal:\\s+([0-9]+)') | first | default('0') | int) %}
+{% set acc.node_mem_mib = acc.node_mem_mib | combine({(node | string): (mem_kb // 1024)}) %}
 {% set nscore = namespace(cores=[], seen=[]) %}
 {% for cpu in cpus | sort %}
 {% if cpu not in nscore.seen %}
@@ -113,8 +114,15 @@
 {% set page_kb = hugepages_size_kb | int %}
 {% endif %}
 {% set page_mib = [page_kb // 1024, 1] | max %}
-{% set node_mib_list = acc.node_mem_mib.values() | list %}
-{% set min_node_mib = (node_mib_list | min) if node_mib_list else 0 %}
+{% set parsed_node_mib = acc.node_mem_mib.values() | map('int') | select('gt', 0) | list %}
+{% if (parsed_node_mib | length) == 0 %}
+{% set even_mib = (ansible_memtotal_mb | int) // [numa_count, 1] | max %}
+{% for node in numa_node_ids %}
+{% set acc.node_mem_mib = acc.node_mem_mib | combine({(node | string): even_mib}) %}
+{% endfor %}
+{% endif %}
+{% set node_mib_list = acc.node_mem_mib.values() | map('int') | select('gt', 0) | list %}
+{% set min_node_mib = (node_mib_list | min) if node_mib_list else (ansible_memtotal_mb | int) %}
 {% set per_node_reserve = [hypervisor_reserve_min_gib_per_node | int * 1024, (hypervisor_reserve_gib | int * 1024) // [numa_count, 1] | max] | max %}
 {% if min_node_mib - per_node_reserve < page_mib %}
 {% set per_node_reserve = [hypervisor_reserve_min_gib_per_node | int * 1024, min_node_mib // 8] | max %}
@@ -125,7 +133,8 @@
 {% else %}
 {% set per_node_mib = ((min_node_mib - per_node_reserve) // page_mib) * page_mib %}
 {% endif %}
-{% set per_node_mib = [page_mib, per_node_mib] | max %}
+{% set min_per_node_mib = ((vm_memory_min_gib | int * 1024) // [numa_count, 1] | max // page_mib) * page_mib %}
+{% set per_node_mib = [page_mib, per_node_mib, min_per_node_mib] | max %}
 {% set memory_mib = per_node_mib * numa_count %}
 {% for mnt in (ansible_mounts | default([])) | sort(attribute='mount', reverse=true) %}
 {% if (not acc.kvm_found) and kvm_base_dir.startswith(mnt.mount) %}

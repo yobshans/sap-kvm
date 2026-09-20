@@ -25,6 +25,10 @@ write_files:
       PermitRootLogin yes
       PasswordAuthentication yes
       KbdInteractiveAuthentication yes
+  - path: /etc/tmpfiles.d/sap-thp.conf
+    permissions: "0644"
+    content: |
+      w /sys/kernel/mm/transparent_hugepage/enabled - - - - never
 
 yum_repos:
 {% for repo in vm_repos %}

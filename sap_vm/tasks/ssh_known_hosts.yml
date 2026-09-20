@@ -1,0 +1,18 @@
+---
+# Drop stale hypervisor known_hosts entries for this guest (IP, short name, FQDN).
+# Recreating the VM issues new host keys; leftover entries cause
+# "REMOTE HOST IDENTIFICATION HAS CHANGED".
+
+- name: Ensure hypervisor .ssh directory exists
+  ansible.builtin.file:
+    path: "{{ guest_known_hosts_file | dirname }}"
+    state: directory
+    mode: "0700"
+
+- name: Remove stale SSH host keys for the guest
+  ansible.builtin.known_hosts:
+    path: "{{ guest_known_hosts_file }}"
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ [vm_ip | default(''), vm_hostname, vm_fqdn] | unique | select('ne', '') | list }}"
+  failed_when: false

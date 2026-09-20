@@ -44,3 +44,6 @@
   ansible.builtin.include_tasks: hosts.yml
   vars:
     guest_hosts_state: absent
+
+- name: Remove stale SSH host keys for the guest
+  ansible.builtin.include_tasks: ssh_known_hosts.yml
