@@ -19,6 +19,11 @@
     guest_ssh_common_args: "{{ lookup('template', 'guest_ssh_args.j2') | trim }}"
   no_log: true
 
+- name: Update hypervisor /etc/hosts with the guest IP
+  ansible.builtin.include_tasks: hosts.yml
+  vars:
+    guest_hosts_state: present
+
 - name: Show guest SSH path
   ansible.builtin.debug:
     msg: >-
@@ -69,3 +74,81 @@
     ansible_python_interpreter: /usr/libexec/platform-python
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
+
+- name: Ensure libxcrypt-compat is installed on the guest
+  ansible.builtin.dnf:
+    name: libxcrypt-compat
+    state: present
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Disable transparent hugepages on the guest
+  ansible.builtin.copy:
+    dest: /sys/kernel/mm/transparent_hugepage/enabled
+    content: "never\n"
+    unsafe_writes: true
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Persist transparent hugepage disable across guest reboot
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/sap-thp.conf
+    content: "w /sys/kernel/mm/transparent_hugepage/enabled - - - - never\n"
+    mode: "0644"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Forget previous guest SSH host keys
+  ansible.builtin.include_tasks: ssh_known_hosts.yml
+
+- name: Read guest SSH host public keys
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - /etc/ssh/ssh_host_ed25519_key.pub
+    - /etc/ssh/ssh_host_ecdsa_key.pub
+    - /etc/ssh/ssh_host_rsa_key.pub
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+  register: guest_ssh_host_pubs
+  failed_when: false
+
+- name: Trust guest SSH host keys on the hypervisor
+  ansible.builtin.known_hosts:
+    path: "{{ guest_known_hosts_file }}"
+    name: "{{ item.0 }}"
+    key: "{{ item.0 }} {{ (item.1.content | b64decode).split()[:2] | join(' ') }}"
+  loop: "{{ ([vm_ip, vm_hostname, vm_fqdn] | unique) | product(guest_ssh_host_pubs.results | selectattr('content', 'defined') | list) | list }}"
+  loop_control:
+    label: "{{ item.0 }} {{ item.1.item | basename }}"
+  when:
+    - item.0 | default('') | length > 0
+    - item.1.content is defined

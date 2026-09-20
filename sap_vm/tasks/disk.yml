@@ -9,23 +9,30 @@
     state: directory
     mode: "0755"
 
+- name: Show guest image download URL
+  ansible.builtin.debug:
+    msg: "Fetching {{ guest_image_url }} -> {{ guest_image_path }}"
+  when: download_guest_image | bool
+
 - name: Download RHEL guest image (when enabled)
   ansible.builtin.get_url:
     url: "{{ guest_image_url }}"
-    dest: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
+    dest: "{{ guest_image_path }}"
     mode: "0644"
+    timeout: "{{ guest_image_download_timeout | int }}"
   when: download_guest_image | bool
 
 - name: Check source image exists
   ansible.builtin.stat:
-    path: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
+    path: "{{ guest_image_path }}"
   register: src_image
 
 - name: Fail if source image missing
   ansible.builtin.fail:
     msg: >
-      Source image not found at {{ kvm_base_dir }}/{{ guest_image_filename }}.
-      Set download_guest_image=true or copy the image manually.
+      Source image not found at {{ guest_image_path }}.
+      Set download_guest_image=true to fetch {{ guest_image_url }},
+      or copy the qcow2 into place. Image and guest repos come from compose_url.
   when: not src_image.stat.exists
 
 - name: Check if VM disk already exists
@@ -35,7 +42,7 @@
 
 - name: Copy guest image to VM disk
   ansible.builtin.copy:
-    src: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
+    src: "{{ guest_image_path }}"
     dest: "{{ vm_disk_path }}"
     remote_src: true
     mode: "0644"

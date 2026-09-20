@@ -115,6 +115,7 @@
       - (vm_memory_mib | int) == (vm_numa_memory_mib | int) * (vm_numa_nodes | int)
       - (hugepages_per_node | int) > 0
       - (hugepage_nodes | length) == (vm_numa_nodes | int)
+      - (vm_memory_mib | int) >= ((vm_memory_min_gib | int) * 1024)
     fail_msg: "Derived guest topology is inconsistent: {{ hana_topology.summary }}"
     success_msg: "Guest topology matches hypervisor hardware ({{ vm_vcpus }} vCPUs, {{ vm_memory_mib }} MiB, {{ vm_numa_nodes }} NUMA cells)"
 
