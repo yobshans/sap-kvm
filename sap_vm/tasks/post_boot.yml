@@ -75,6 +75,22 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
+- name: Update guest /etc/hosts with the NAT IP
+  ansible.builtin.include_tasks:
+    file: hosts.yml
+    apply:
+      delegate_to: "{{ vm_name }}_guest"
+      become: false
+      vars:
+        ansible_user: root
+        ansible_password: "{{ vm_root_password }}"
+        ansible_ssh_pass: "{{ vm_root_password }}"
+        ansible_python_interpreter: /usr/libexec/platform-python
+        ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+        ansible_host_key_checking: false
+  vars:
+    guest_hosts_state: present
+
 - name: Ensure libxcrypt-compat is installed on the guest
   ansible.builtin.dnf:
     name: libxcrypt-compat
