@@ -5,6 +5,8 @@ fqdn: {{ vm_fqdn }}
 manage_etc_hosts: true
 disable_root: false
 ssh_pwauth: true
+selinux:
+  mode: permissive
 
 users:
   - name: root

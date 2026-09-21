@@ -112,11 +112,13 @@ applies:
 - Yum repos from `compose_url`, packages from `vm_packages` (includes
   `libxcrypt-compat` for HCMT) plus `qemu-guest-agent`
 - Filesystem grow on `/dev/vda`
+- SELinux `permissive` (`setenforce 0` equivalent)
 
 Password SSH is required; the role does not inject SSH keys. Recreate with
 `-e destroy_existing_vm=true` when user-data changes, because cloud-init
-user-data runs on first boot only. `libxcrypt-compat` and THP=never are also
-applied over SSH after boot so an existing guest still gets them.
+user-data runs on first boot only. `libxcrypt-compat`, THP=never, and SELinux
+permissive are also applied over SSH after boot so an existing guest still
+gets them.
 
 ## Hostname, SSH, and known_hosts
 

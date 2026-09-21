@@ -119,6 +119,37 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
+- name: Set SELinux permissive on the guest
+  ansible.builtin.copy:
+    dest: /sys/fs/selinux/enforce
+    content: "0"
+    unsafe_writes: true
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+  failed_when: false
+
+- name: Persist SELinux permissive across guest reboot
+  ansible.builtin.replace:
+    path: /etc/selinux/config
+    regexp: '^SELINUX=.*'
+    replace: SELINUX=permissive
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
 - name: Forget previous guest SSH host keys
   ansible.builtin.include_tasks: ssh_known_hosts.yml
 
