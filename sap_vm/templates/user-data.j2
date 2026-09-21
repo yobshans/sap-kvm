@@ -2,9 +2,11 @@
 
 hostname: {{ vm_hostname }}
 fqdn: {{ vm_fqdn }}
-manage_etc_hosts: true
+manage_etc_hosts: false
 disable_root: false
 ssh_pwauth: true
+selinux:
+  mode: permissive
 
 users:
   - name: root

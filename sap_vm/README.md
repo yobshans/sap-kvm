@@ -112,22 +112,27 @@ applies:
 - Yum repos from `compose_url`, packages from `vm_packages` (includes
   `libxcrypt-compat` for HCMT) plus `qemu-guest-agent`
 - Filesystem grow on `/dev/vda`
+- SELinux `permissive` (`setenforce 0` equivalent)
 
 Password SSH is required; the role does not inject SSH keys. Recreate with
 `-e destroy_existing_vm=true` when user-data changes, because cloud-init
-user-data runs on first boot only. `libxcrypt-compat` and THP=never are also
-applied over SSH after boot so an existing guest still gets them.
+user-data runs on first boot only. `libxcrypt-compat`, THP=never, and SELinux
+permissive are also applied over SSH after boot so an existing guest still
+gets them.
 
 ## Hostname, SSH, and known_hosts
 
-After DHCP, the hypervisor `/etc/hosts` gets one unmarked line:
+Cloud-init does not map the FQDN to `127.0.0.1` (`manage_etc_hosts: false`).
+After DHCP, both the hypervisor and the guest `/etc/hosts` get one unmarked
+line with the live NAT IP:
 
 ```
 192.168.122.95 sap-kvm-vm.lab.eng.tlv2.redhat.com sap-kvm-vm
 ```
 
-Stale IPs for that FQDN are removed first (including leftover `BEGIN`/`END`
-markers). Destroy removes the line.
+That is required by `community.sap_install.sap_maintain_etc_hosts`, which
+fails if `sap-kvm-vm` resolves to `127.0.0.1`. Stale IPs and leftover
+`BEGIN`/`END` markers are removed first. Destroy removes the hypervisor line.
 
 Libvirt NAT (`192.168.122.0/24`) is only reachable from the hypervisor. When
 the playbook runs against a remote `kvm_host`, guest SSH jumps through that
