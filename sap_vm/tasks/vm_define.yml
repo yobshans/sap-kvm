@@ -98,6 +98,29 @@
     - vm_start.failed | default(false)
     - vm_start_retry is not defined
 
+- name: Fail if the VM did not start after TSC correction
+  ansible.builtin.fail:
+    msg: "{{ vm_start_retry.msg | default('failed to start VM after TSC correction') }}"
+  when:
+    - vm_start_retry is defined
+    - vm_start_retry.failed | default(false)
+
+- name: Get VM status before waiting on DHCP
+  community.libvirt.virt:
+    command: status
+    name: "{{ vm_name }}"
+  register: vm_running_check
+
+- name: Fail early if the VM is not running (see the QEMU log for the real error)
+  ansible.builtin.fail:
+    msg: >-
+      VM {{ vm_name }} is not running (status: {{ vm_running_check.status | default('unknown') }}).
+      It likely crashed right after start (common causes: hugepages could not be
+      allocated, insufficient host memory, or an invalid domain XML value).
+      Check /var/log/libvirt/qemu/{{ vm_name }}.log on the hypervisor for the
+      actual QEMU error before retrying.
+  when: (vm_running_check.status | default('')) != 'running'
+
 - name: Set VM to autostart
   community.libvirt.virt:
     name: "{{ vm_name }}"
@@ -123,6 +146,23 @@
   retries: 40
   delay: 3
   until: (vm_ifs | to_json) is search('192\\.168\\.')
+  failed_when: false
+
+- name: Fail with diagnostics if no DHCP lease appeared
+  ansible.builtin.fail:
+    msg: >-
+      {{ vm_name }} is running but never leased an IP on the '{{ vm_network }}'
+      network after 120s. The VM itself is up (see "Display VM info" above), so
+      this is almost always a guest-side networking/cloud-init problem, not a
+      libvirt one. On the hypervisor, check:
+        virsh net-dhcp-leases {{ vm_network }}
+        virsh domiflist {{ vm_name }}
+        virsh console {{ vm_name }}   # watch for a boot hang (dracut, GRUB,
+                                     # "no bootable device", cloud-init NoCloud
+                                     # datasource not found, etc.)
+      A running domain with zero leases almost always means the guest OS
+      never got past early boot, so DHCP was never requested.
+  when: not ((vm_ifs | to_json) is search('192\\.168\\.'))
 
 - name: Set VM IP fact
   ansible.builtin.set_fact:
