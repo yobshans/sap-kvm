@@ -120,6 +120,22 @@ user-data runs on first boot only. `libxcrypt-compat`, THP=never, and SELinux
 permissive are also applied over SSH after boot so an existing guest still
 gets them.
 
+## Guest network / DHCP lease
+
+`preflight.yml` ensures the libvirt network (`vm_network`, default
+`default`) is active, then reads its XML to find the real bridge device
+(e.g. `virbr0`) and inserts an `iptables -I INPUT 1 -i <bridge> -j ACCEPT`
+rule via `ansible.builtin.iptables`. Some hosts have a host firewall
+(`iptables-nft`/`nftables`) with a catch-all `REJECT` at the end of `INPUT`
+that pre-dates the libvirt network; it silently drops DHCP/DNS requests
+before they reach `dnsmasq`, even though `virsh net-list` shows the network
+as active. Symptom: the guest boots fine, cloud-init and NetworkManager
+correctly retry DHCP forever, but `virsh net-dhcp-leases` and
+`vm_define.yml`'s `Wait for VM DHCP lease` task both time out. This task is
+idempotent (checked with `iptables -C`) and re-applies on every run, so it
+also recovers from a host reboot that reset the ruleset — it does not persist
+the rule outside of Ansible.
+
 ## Hostname, SSH, and known_hosts
 
 Cloud-init does not map the FQDN to `127.0.0.1` (`manage_etc_hosts: false`).

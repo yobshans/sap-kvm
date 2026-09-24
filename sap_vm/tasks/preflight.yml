@@ -68,3 +68,36 @@
   community.libvirt.virt_net:
     name: "{{ vm_network }}"
     autostart: true
+
+# Some hosts have a host-level firewall (iptables-nft/nftables) with a
+# catch-all REJECT at the end of INPUT that pre-dates libvirt's own network,
+# and it can shadow dnsmasq's DHCP/DNS sockets on the bridge even though the
+# libvirt network itself is "active". Guests then boot fine, request DHCP
+# forever, and never get a lease. Resolve the network's real bridge device
+# and make sure traffic from it is accepted before that catch-all rule.
+- name: Read guest network XML to find its bridge device
+  community.libvirt.virt_net:
+    command: get_xml
+    name: "{{ vm_network }}"
+  register: vm_network_xml
+
+- name: Determine the bridge interface for the guest network
+  ansible.builtin.set_fact:
+    vm_network_bridge_iface: "{{ vm_network_xml.get_xml | regex_search('<bridge[^>]*name=.([a-zA-Z0-9_]+)', '\\1') }}"
+
+- name: Fail if the guest network bridge device could not be determined
+  ansible.builtin.fail:
+    msg: >-
+      Could not find a <bridge name='...'/> device in the XML for libvirt
+      network '{{ vm_network }}'. It may be an isolated/routed network with
+      no bridge, which this role does not support.
+  when: not (vm_network_bridge_iface | default('') | length > 0)
+
+- name: Allow guest network traffic through the host firewall
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "{{ vm_network_bridge_iface }}"
+    jump: ACCEPT
+    action: insert
+    rule_num: 1
+    comment: "sap_vm: allow DHCP/DNS from {{ vm_network }} ({{ vm_network_bridge_iface }}) to reach dnsmasq"
