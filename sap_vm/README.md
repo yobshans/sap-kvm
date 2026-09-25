@@ -86,18 +86,39 @@ The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
 
 ## RHEL compose (image and guest repos)
 
-`compose_url` is the single knob for the guest image URL and yum repos.
-`-e compose_url='http://.../RHEL-10.2-YYYYMMDD.N'` updates both.
+`compose_url` must point at the directory that directly contains the Variant
+directories (`BaseOS`, `AppStream`, `CRB`, `SAP`, `SAPHANA`). Different labs
+put that at different depths, so `compose_url` includes whatever prefix your
+lab needs:
+
+| Lab | `compose_url` |
+|---|---|
+| TLV (default) | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose` |
+| Scale lab | `http://mirror.scalelab.redhat.com/RHEL10/10.2` (no `compose/` subdir) |
+
+`compose_release` (default `10.2`, used for repo names/descriptions) and
+`guest_image_compose_id` (default `10.2-20260507.1`, the exact dated build id
+embedded in the qcow2 filename) are **independent** of `compose_url` — a
+mirror's URL does not necessarily encode either the same way a compose's
+does, and a lab like Scale lab mirrors a moving "latest" build under a
+release-only path (`.../10.2/`) with no date in the URL at all. Override all
+three together when switching labs:
+
+```bash
+-e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' \
+-e compose_release='10.2' \
+-e guest_image_compose_id='10.2-20260408.1'
+```
 
 | Derived value | Rule |
 |---|---|
-| Remote qcow2 | `{compose_url}/compose/BaseOS/x86_64/images/rhel-guest-image-{id}.x86_64.qcow2` where `{id}` is the compose basename without `RHEL-` |
+| Remote qcow2 | `{compose_url}/BaseOS/x86_64/images/rhel-guest-image-{guest_image_compose_id}.x86_64.qcow2` |
 | Local copy | `guest_image_path`, default `/home/kvm/rhel10-2-base.qcow2` (`guest_image_filename`) |
-| Repos | BaseOS, AppStream, CRB, SAP, SAPHANA under `{compose_url}/compose/<Name>/x86_64/os/` |
+| Repos | BaseOS, AppStream, CRB, SAP, SAPHANA under `{compose_url}/<Name>/x86_64/os/`, each `skip_if_unavailable` so a lab missing SAP/SAPHANA just skips those two |
 
-Only the **local** file name is independent of the compose id. Download timeout
-is `guest_image_download_timeout` (default 3600s); a 1 GiB qcow2 exceeds
-Ansible `get_url`'s 10s default.
+Only the **local** image file name is independent of the lab. Download
+timeout is `guest_image_download_timeout` (default 3600s); a 1 GiB qcow2
+exceeds Ansible `get_url`'s 10s default.
 
 ## First boot (cloud-init)
 
@@ -219,7 +240,15 @@ ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
   -e download_guest_image=true \
-  -e compose_url='http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1'
+  -e compose_url='http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose'
+
+# Same, but from the Scale lab mirror instead of TLV
+ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
+  -e vm_root_password='...' \
+  -e download_guest_image=true \
+  -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' \
+  -e compose_release='10.2' \
+  -e guest_image_compose_id='10.2-20260408.1'
 
 # Cap memory and disk; CPU pinning still follows this host
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
@@ -243,7 +272,9 @@ Useful extra-vars:
 | Variable | Default | Purpose |
 |---|---|---|
 | `vm_root_password` | (required) | Guest root password; never stored in git |
-| `compose_url` | RHEL-10.2-20260507.1 compose | Image URL + BaseOS/AppStream/CRB/SAP/SAPHANA repos |
+| `compose_url` | TLV RHEL-10.2-20260507.1 compose | Directory containing BaseOS/AppStream/CRB/SAP/SAPHANA |
+| `compose_release` | `10.2` | Repo names/descriptions; independent of `compose_url` |
+| `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; independent of `compose_url` |
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
 | `guest_image_filename` | `rhel10-2-base.qcow2` | Local image name only |
 | `destroy_existing_vm` | `false` | Tear down VM, disk, ISO, `/etc/hosts`, known_hosts |

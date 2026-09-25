@@ -60,19 +60,32 @@ hugepages_per_node: auto
 hugepage_nodes: auto
 
 # --- RHEL compose (image URL and guest yum repos are derived from this) ---
-# Override with -e compose_url='http://.../RHEL-10.2-YYYYMMDD.N'
-compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1"
-compose_id: "{{ compose_url | regex_replace('/+$', '') | basename }}"
-compose_release: "{{ compose_id | regex_replace('^RHEL-', '') | regex_replace('-[0-9]{8}.*$', '') }}"
+# compose_url must point at the directory that directly contains the Variant
+# directories (BaseOS/AppStream/CRB/SAP/SAPHANA). Different labs put that at
+# different depths, so include whatever prefix your lab needs, e.g.:
+#   TLV lab:    .../RHEL-10.2-20260507.1/compose   (compose has its own subdir)
+#   Scale lab:  http://mirror.scalelab.redhat.com/RHEL10/10.2   (no compose/ subdir)
+# Override with -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2'
+compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose"
+
+# Release used for guest yum repo names/descriptions. Kept independent of
+# compose_url since not every lab's URL encodes the release the same way.
+compose_release: "10.2"
 compose_major: "{{ compose_release.split('.') | first }}"
 
 # --- Storage ---
 kvm_base_dir: /home/kvm
 # Used only when no existing pool already has this target path (this host has pool "kvm")
 libvirt_pool: sap-kvm
-# Remote qcow2 name follows the compose id (RHEL-10.2-YYYYMMDD.N →
-# rhel-guest-image-10.2-YYYYMMDD.N.x86_64.qcow2). Local name does not.
-guest_image_url: "{{ compose_url | regex_replace('/+$', '') }}/compose/BaseOS/x86_64/images/rhel-guest-image-{{ compose_id | regex_replace('^RHEL-', '') }}.x86_64.qcow2"
+# The exact dated compose build id embedded in the qcow2 filename
+# (rhel-guest-image-<this>.x86_64.qcow2). NOT always derivable from
+# compose_url -- e.g. the Scale lab URL only names the release stream, not
+# the specific dated build currently mirrored there -- so it is its own
+# variable. Override together with compose_url when switching labs:
+#   -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' -e guest_image_compose_id='10.2-20260408.1'
+guest_image_compose_id: "10.2-20260507.1"
+# Remote qcow2 name follows guest_image_compose_id. Local name does not.
+guest_image_url: "{{ compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/images/rhel-guest-image-{{ guest_image_compose_id }}.x86_64.qcow2"
 guest_image_filename: rhel10-2-base.qcow2
 guest_image_path: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
 vm_disk_size: auto                     # preferred OS disk, reduced to free space if needed
@@ -89,22 +102,24 @@ vm_network: default
 vm_bridge: ""                   # leave empty to use NAT default network
 
 # --- Yum repos inside the guest (from the same compose as the qcow2) ---
+# skip_if_unavailable (set in templates/user-data.j2) means a lab that does
+# not mirror SAP/SAPHANA just skips those two instead of failing the boot.
 vm_repos:
   - name: "rhel-{{ compose_major }}-baseos"
     description: "RHEL {{ compose_release }} BaseOS"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/compose/BaseOS/x86_64/os/"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/os/"
   - name: "rhel-{{ compose_major }}-appstream"
     description: "RHEL {{ compose_release }} AppStream"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/compose/AppStream/x86_64/os/"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/AppStream/x86_64/os/"
   - name: "rhel-{{ compose_major }}-crb"
     description: "RHEL {{ compose_release }} CRB"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/compose/CRB/x86_64/os/"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/CRB/x86_64/os/"
   - name: "rhel-{{ compose_major }}-sap"
     description: "RHEL {{ compose_release }} SAP"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/compose/SAP/x86_64/os/"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/SAP/x86_64/os/"
   - name: "rhel-{{ compose_major }}-saphana"
     description: "RHEL {{ compose_release }} SAPHANA"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/compose/SAPHANA/x86_64/os/"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/SAPHANA/x86_64/os/"
 
 # Guest packages for verification and SAP HCMT
 vm_packages:
