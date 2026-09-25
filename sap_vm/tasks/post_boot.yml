@@ -64,7 +64,7 @@
 - name: Wait for cloud-init boot finished marker
   ansible.builtin.wait_for:
     path: /var/lib/cloud/instance/boot-finished
-    timeout: 300
+    timeout: "{{ cloud_init_boot_timeout }}"
   delegate_to: "{{ vm_name }}_guest"
   become: false
   vars:

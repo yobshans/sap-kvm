@@ -141,6 +141,13 @@ user-data runs on first boot only. `libxcrypt-compat`, THP=never, and SELinux
 permissive are also applied over SSH after boot so an existing guest still
 gets them.
 
+`post_boot.yml` waits up to `cloud_init_boot_timeout` (default 1800s) for
+`/var/lib/cloud/instance/boot-finished` before continuing. cloud-init is
+installing real packages from 5 real repos on a working network (see below),
+so on a slow mirror this easily exceeds a couple of minutes; a repo that is
+unreachable/misconfigured can also make it stall closer to the full timeout
+per repo before `skip_if_unavailable` gives up on it.
+
 ## Guest network / DHCP lease and outbound access
 
 `preflight.yml` ensures the libvirt network (`vm_network`, default
@@ -305,6 +312,7 @@ Useful extra-vars:
 | `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; independent of `compose_url` |
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
 | `guest_image_filename` | `rhel10-2-base.qcow2` | Local image name only |
+| `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |
 | `destroy_existing_vm` | `false` | Tear down VM, disk, ISO, `/etc/hosts`, known_hosts |
 | `vm_domain` | `lab.eng.tlv2.redhat.com` | FQDN suffix for `/etc/hosts` |
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
