@@ -162,3 +162,7 @@ vm_packages:
 download_guest_image: false     # set true to fetch guest_image_url from compose_url
 guest_image_download_timeout: 3600
 destroy_existing_vm: false      # set true to tear down existing VM first
+
+# cloud-init installs vm_packages from 5 real yum repos on first boot; on a
+# slow mirror this comfortably exceeds a couple of minutes.
+cloud_init_boot_timeout: 1800
