@@ -123,9 +123,13 @@
 # world (yum repos, HANA/HCMT downloads) actually traverses -- not INPUT.
 # Symptom: DHCP works, SSH into the guest works, but `dnf install` inside
 # the guest fails immediately with "Could not connect to server" for every
-# repo baseurl. Only the guest -> outside direction needs an explicit
-# ACCEPT; the reply traffic already matches this host's pre-existing
-# ESTABLISHED,RELATED allow rule.
+# repo baseurl.
+#
+# Two rules are needed, not one: the bridge rule below only covers the
+# guest's initial outbound packet (iifname virbr0). The *reply* comes back
+# in via the physical NIC, not virbr0, so it needs its own accept -- unlike
+# INPUT on this host, FORWARD had no pre-existing ESTABLISHED,RELATED accept
+# rule at all, so without this the reply hits the same catch-all REJECT.
 - name: Remove any stale malformed firewall rule from a previous buggy run (FORWARD)
   ansible.builtin.iptables:
     chain: FORWARD
@@ -142,3 +146,14 @@
     action: insert
     rule_num: 1
     comment: "sap_vm: allow outbound traffic from {{ vm_network }} ({{ vm_network_bridge_iface }}) to reach the internet/yum repos"
+
+- name: Allow established/related return traffic through FORWARD
+  ansible.builtin.iptables:
+    chain: FORWARD
+    ctstate:
+      - ESTABLISHED
+      - RELATED
+    jump: ACCEPT
+    action: insert
+    rule_num: 1
+    comment: "sap_vm: allow return traffic to {{ vm_network }} guests (reply arrives on the physical NIC, not the bridge)"
