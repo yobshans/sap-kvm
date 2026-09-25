@@ -82,8 +82,13 @@
   register: vm_network_xml
 
 - name: Determine the bridge interface for the guest network
+  # regex_search always returns a list when given a backreference arg, even
+  # for a single group (['virbr0'], not 'virbr0') -- index into it or the
+  # rendered iptables rule ends up matching a literal "['virbr0']" interface
+  # name, i.e. nothing, and traffic silently falls through to any catch-all
+  # reject rule further down the chain.
   ansible.builtin.set_fact:
-    vm_network_bridge_iface: "{{ vm_network_xml.get_xml | regex_search('<bridge[^>]*name=.([a-zA-Z0-9_]+)', '\\1') }}"
+    vm_network_bridge_iface: "{{ (vm_network_xml.get_xml | regex_search('<bridge[^>]*name=.([a-zA-Z0-9_]+)', '\\1') | default([''], true))[0] }}"
 
 - name: Fail if the guest network bridge device could not be determined
   ansible.builtin.fail:
@@ -92,6 +97,17 @@
       network '{{ vm_network }}'. It may be an isolated/routed network with
       no bridge, which this role does not support.
   when: not (vm_network_bridge_iface | default('') | length > 0)
+
+# Older runs of this role could set vm_network_bridge_iface to a
+# stringified Python list (e.g. "['virbr0']") instead of "virbr0" -- clean
+# up that no-op rule before inserting the correct one.
+- name: Remove any stale malformed firewall rule from a previous buggy run (INPUT)
+  ansible.builtin.iptables:
+    chain: INPUT
+    in_interface: "['{{ vm_network_bridge_iface }}']"
+    jump: ACCEPT
+    state: absent
+  failed_when: false
 
 - name: Allow guest network traffic through the host firewall
   ansible.builtin.iptables:
@@ -110,6 +126,14 @@
 # repo baseurl. Only the guest -> outside direction needs an explicit
 # ACCEPT; the reply traffic already matches this host's pre-existing
 # ESTABLISHED,RELATED allow rule.
+- name: Remove any stale malformed firewall rule from a previous buggy run (FORWARD)
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "['{{ vm_network_bridge_iface }}']"
+    jump: ACCEPT
+    state: absent
+  failed_when: false
+
 - name: Allow outbound guest network traffic through the host firewall
   ansible.builtin.iptables:
     chain: FORWARD

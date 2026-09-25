@@ -56,8 +56,11 @@
     - (vm_start.msg | default('') | string ~ vm_start.exception | default('') | string) is search('TSC frequency')
   block:
     - name: Parse host TSC frequency from libvirt
+      # regex_search always returns a list when given a backreference arg,
+      # even for a single group (['3000000000'], not '3000000000') -- index
+      # into it or the digits-only check below never matches.
       ansible.builtin.set_fact:
-        vm_tsc_frequency: "{{ vm_start.msg | regex_search('host frequency ([0-9]+) Hz', '\\1') }}"
+        vm_tsc_frequency: "{{ (vm_start.msg | regex_search('host frequency ([0-9]+) Hz', '\\1') | default([''], true))[0] }}"
 
     - name: Fail if libvirt did not advertise a host TSC frequency
       ansible.builtin.fail:
