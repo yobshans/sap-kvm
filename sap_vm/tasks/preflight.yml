@@ -101,3 +101,20 @@
     action: insert
     rule_num: 1
     comment: "sap_vm: allow DHCP/DNS from {{ vm_network }} ({{ vm_network_bridge_iface }}) to reach dnsmasq"
+
+# The same catch-all rule (or an equivalent one further down the chain) can
+# also sit in FORWARD, which is what NAT'd guest traffic to the outside
+# world (yum repos, HANA/HCMT downloads) actually traverses -- not INPUT.
+# Symptom: DHCP works, SSH into the guest works, but `dnf install` inside
+# the guest fails immediately with "Could not connect to server" for every
+# repo baseurl. Only the guest -> outside direction needs an explicit
+# ACCEPT; the reply traffic already matches this host's pre-existing
+# ESTABLISHED,RELATED allow rule.
+- name: Allow outbound guest network traffic through the host firewall
+  ansible.builtin.iptables:
+    chain: FORWARD
+    in_interface: "{{ vm_network_bridge_iface }}"
+    jump: ACCEPT
+    action: insert
+    rule_num: 1
+    comment: "sap_vm: allow outbound traffic from {{ vm_network }} ({{ vm_network_bridge_iface }}) to reach the internet/yum repos"
