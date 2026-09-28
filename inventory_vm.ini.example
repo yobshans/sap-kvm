@@ -5,9 +5,9 @@
 
 [hypervisor]
 # Remote hypervisor — set ansible_host to an IP or DNS name you can ping/ssh:
-hypervisor ansible_host=192.168.1.10
+hypervisor01 ansible_host=192.168.1.10
 
-# This machine is the KVM host (comment out hypervisor above, then uncomment):
+# This machine is the KVM host (comment out hypervisor01 above, then uncomment):
 # localhost ansible_connection=local
 
 [all:vars]

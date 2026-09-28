@@ -237,7 +237,7 @@ name, and set `ansible_ssh_pass`. The controller needs `sshpass`
 
 ```ini
 [hypervisor]
-hypervisor ansible_host=192.168.1.10
+hypervisor01 ansible_host=192.168.1.10
 
 [all:vars]
 ansible_ssh_user=root
@@ -246,7 +246,7 @@ ansible_python_interpreter=/usr/libexec/platform-python
 ansible_ssh_common_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 ```
 
-Run on this machine instead (comment out `hypervisor`, uncomment localhost):
+Run on this machine instead (comment out `hypervisor01`, uncomment localhost):
 
 ```ini
 [hypervisor]
