@@ -5,7 +5,7 @@ run it reads the hypervisor (CPU, NUMA, memory, disk, TSC) and builds a libvirt
 domain from that hardware, following SAP HANA on KVM / RHV sizing rules.
 
 The wrapper playbook is `create_sap_vm.yml` at the repository root. It targets
-the **`kvm_host`** inventory group (this machine or a remote hypervisor).
+the **`hypervisor`** inventory group (this machine or a remote hypervisor).
 
 **Guest OS** is RHEL 10.2. The **hypervisor** can be RHEL 9.6 or 10.2.
 
@@ -196,7 +196,7 @@ fails if `sap-kvm-vm` resolves to `127.0.0.1`. Stale IPs and leftover
 `BEGIN`/`END` markers are removed first. Destroy removes the hypervisor line.
 
 Libvirt NAT (`192.168.122.0/24`) is only reachable from the hypervisor. When
-the playbook runs against a remote `kvm_host`, guest SSH jumps through that
+the playbook runs against a remote `hypervisor`, guest SSH jumps through that
 host (`ProxyCommand` + `sshpass`). On `ansible_connection=local`, SSH is
 direct.
 
@@ -213,8 +213,8 @@ does not hit `REMOTE HOST IDENTIFICATION HAS CHANGED`.
   (`community.libvirt` ≥ 2.3.0, `community.general` ≥ 8.0.0).
 - `vm_root_password` is **required** and is not stored in git.
 - Guest image at `guest_image_path`, or `-e download_guest_image=true`.
-- Inventory file `inventory_vm.ini` with a single host in `[kvm_host]`.
-- `sshpass` on the Ansible controller (and on `kvm_host` when jumping to the
+- Inventory file `inventory_vm.ini` with a single host in `[hypervisor]`.
+- `sshpass` on the Ansible controller (and on `hypervisor` when jumping to the
   guest). Use `/usr/libexec/platform-python` on RHEL 9.6 and 10.2.
 
 Tasks use Ansible modules (`community.libvirt.virt` / `virt_pool` /
@@ -223,7 +223,7 @@ Tasks use Ansible modules (`community.libvirt.virt` / `virt_pool` /
 
 ## Inventory
 
-Copy the example and edit **one** host in `[kvm_host]`:
+Copy the example and edit **one** host in `[hypervisor]`:
 
 ```bash
 cp inventory_vm.ini.example inventory_vm.ini
@@ -236,8 +236,8 @@ name, and set `ansible_ssh_pass`. The controller needs `sshpass`
 (`dnf install sshpass`):
 
 ```ini
-[kvm_host]
-kvmhost ansible_host=192.168.1.10
+[hypervisor]
+hypervisor ansible_host=192.168.1.10
 
 [all:vars]
 ansible_ssh_user=root
@@ -246,17 +246,17 @@ ansible_python_interpreter=/usr/libexec/platform-python
 ansible_ssh_common_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 ```
 
-Run on this machine instead (comment out `kvmhost`, uncomment localhost):
+Run on this machine instead (comment out `hypervisor`, uncomment localhost):
 
 ```ini
-[kvm_host]
+[hypervisor]
 localhost ansible_connection=local
 ```
 
 Check connectivity:
 
 ```bash
-ansible kvm_host -m ping
+ansible hypervisor -m ping
 ```
 
 Topology, hugepages, libvirt, and the guest disk are always on **that** host,

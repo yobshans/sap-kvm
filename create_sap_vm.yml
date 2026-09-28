@@ -2,7 +2,7 @@
 # create_sap_vm.yml — Create KVM VM for SAP HANA benchmarking
 
 - name: Create KVM HANA VM
-  hosts: kvm_host
+  hosts: hypervisor
   become: true
   gather_facts: true
 

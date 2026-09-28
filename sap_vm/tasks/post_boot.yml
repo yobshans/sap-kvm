@@ -4,7 +4,7 @@
 # Guest repos, packages, SSH, and filesystem grow are applied by cloud-init.
 #
 # 192.168.122.0/24 is libvirt NAT on the hypervisor. A remote controller has
-# no route there, so guest SSH jumps through kvm_host unless connection=local.
+# no route there, so guest SSH jumps through hypervisor unless connection=local.
 # ============================================================================
 
 - name: Set guest SSH jump through the hypervisor
