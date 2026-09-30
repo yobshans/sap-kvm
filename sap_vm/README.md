@@ -97,12 +97,22 @@ lab needs:
 | Scale lab | `http://mirror.scalelab.redhat.com/RHEL10/10.2` (no `compose/` subdir) |
 
 `compose_release` (default `10.2`, used for repo names/descriptions) and
-`guest_image_compose_id` (default `10.2-updates-20260928.d.0`, the exact dated build id
+`guest_image_compose_id` (default `10.2-20260507.1`, the exact dated build id
 embedded in the qcow2 filename) are **independent** of `compose_url` — a
 mirror's URL does not necessarily encode either the same way a compose's
 does, and a lab like Scale lab mirrors a moving "latest" build under a
 release-only path (`.../10.2/`) with no date in the URL at all. Override all
 three together when switching labs:
+
+> **`-updates-*` composes:** TLV's `RHEL-10.2-updates-*` composes (the
+> `compose_url` default) refresh the yum repos but do **not** rebuild
+> `BaseOS/x86_64/images/` — that qcow2 still lives under the last base
+> compose's dated id. That's why `guest_image_compose_id` intentionally
+> stays pinned to `10.2-20260507.1` even after `compose_url` moves to a
+> newer `-updates-*` build; pointing it at the `-updates-*` id 404s
+> (`rhel-guest-image-10.2-updates-<date>....qcow2` does not exist). Bump
+> `guest_image_compose_id` only when a new **base** (non-`-updates`)
+> compose actually ships a new guest image.
 
 ```bash
 -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' \
@@ -314,7 +324,7 @@ Useful extra-vars:
 | `vm_root_password` | (required) | Guest root password; never stored in git |
 | `compose_url` | TLV RHEL-10.2-updates-20260928.d.0 compose | Directory containing BaseOS/AppStream/CRB/SAP/SAPHANA |
 | `compose_release` | `10.2` | Repo names/descriptions; independent of `compose_url` |
-| `guest_image_compose_id` | `10.2-updates-20260928.d.0` | Dated build id in the qcow2 filename; independent of `compose_url` |
+| `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; independent of `compose_url` (see `-updates-*` caveat above) |
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
 | `guest_image_filename` | `rhel10-2-base.qcow2` | Local image name only |
 | `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |

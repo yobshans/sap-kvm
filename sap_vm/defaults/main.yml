@@ -83,7 +83,14 @@ libvirt_pool: sap-kvm
 # the specific dated build currently mirrored there -- so it is its own
 # variable. Override together with compose_url when switching labs:
 #   -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' -e guest_image_compose_id='10.2-20260408.1'
-guest_image_compose_id: "10.2-updates-20260928.d.0"
+#
+# The RHEL-10.2-updates-* composes (compose_url default) carry refreshed yum
+# repos but do not rebuild BaseOS/x86_64/images/ -- that qcow2 still ships
+# under the last base compose's dated build id, so this intentionally does
+# NOT track the "-updates-..." id embedded in compose_url. Pointing this at
+# the updates id 404s: rhel-guest-image-10.2-updates-20260928.d.0... does not
+# exist. Override together with compose_url when switching labs/builds.
+guest_image_compose_id: "10.2-20260507.1"
 # Remote qcow2 name follows guest_image_compose_id. Local name does not.
 guest_image_url: "{{ compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/images/rhel-guest-image-{{ guest_image_compose_id }}.x86_64.qcow2"
 guest_image_filename: rhel10-2-base.qcow2
