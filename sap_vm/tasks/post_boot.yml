@@ -1,7 +1,9 @@
 ---
 # ============================================================================
 # Post-boot — wait for the guest and add it to the in-memory inventory
-# Guest repos, packages, SSH, and filesystem grow are applied by cloud-init.
+# Guest repos (from guest_image_compose_url), packages, SSH, and filesystem
+# grow are applied by cloud-init. repo_update.yml (after this file) later
+# repoints those repos at compose_url and runs dnf update.
 #
 # 192.168.122.0/24 is libvirt NAT on the hypervisor. A remote controller has
 # no route there, so guest SSH jumps through hypervisor unless connection=local.

@@ -1,0 +1,61 @@
+---
+# ============================================================================
+# Repo update — repoint the guest's yum repos at compose_url and dnf update
+#
+# The guest was installed from guest_image_compose_url (a GA/base compose,
+# see defaults/main.yml) via cloud-init's vm_repos. compose_url is typically
+# a newer "-updates-*" compose that only refreshes package repodata (it does
+# not carry a rebuilt guest image), so once the guest is up we repoint its
+# existing repo files at compose_url (vm_update_repos, same repo `name`s as
+# vm_repos so this overwrites them in place) and run `dnf update` to pull in
+# the newer packages/errata.
+# ============================================================================
+
+- name: Show repo update plan
+  ansible.builtin.debug:
+    msg: >-
+      Repointing guest yum repos at {{ compose_url }} and running dnf update
+      (guest_update_packages=true).
+
+- name: Repoint guest yum repos at compose_url
+  ansible.builtin.yum_repository:
+    name: "{{ item.name }}"
+    description: "{{ item.description }}"
+    baseurl: "{{ item.baseurl }}"
+    enabled: true
+    gpgcheck: false
+    skip_if_unavailable: true
+  loop: "{{ vm_update_repos }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Run dnf update on the guest
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    update_cache: true
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  async: "{{ guest_dnf_update_async }}"
+  poll: "{{ guest_dnf_update_poll }}"
+  register: guest_dnf_update
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Show dnf update result
+  ansible.builtin.debug:
+    msg: "dnf update on the guest: {{ 'changed, packages updated' if guest_dnf_update.changed else 'already up to date' }}"

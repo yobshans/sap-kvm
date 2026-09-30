@@ -39,6 +39,11 @@
   ansible.builtin.include_tasks: post_boot.yml
   tags: [post_boot]
 
+- name: Include repo update and dnf update (when enabled)
+  ansible.builtin.include_tasks: repo_update.yml
+  when: guest_update_packages | bool
+  tags: [repo_update]
+
 - name: Include verification
   ansible.builtin.include_tasks: verify.yml
   tags: [verify]

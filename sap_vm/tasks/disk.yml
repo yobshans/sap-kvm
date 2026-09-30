@@ -32,7 +32,9 @@
     msg: >
       Source image not found at {{ guest_image_path }}.
       Set download_guest_image=true to fetch {{ guest_image_url }},
-      or copy the qcow2 into place. Image and guest repos come from compose_url.
+      or copy the qcow2 into place. Image and first-boot guest repos come
+      from guest_image_compose_url; compose_url is used later to refresh
+      the guest's repos and dnf update it.
   when: not src_image.stat.exists
 
 - name: Check if VM disk already exists

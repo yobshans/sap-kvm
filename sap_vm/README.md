@@ -84,37 +84,47 @@ frequency is applied and start is retried. Override with
 The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
 `x2apic`. Memory ballooning is disabled.
 
-## RHEL compose (image and guest repos)
+## RHEL compose (image, install repos, and update repos)
 
-`compose_url` must point at the directory that directly contains the Variant
-directories (`BaseOS`, `AppStream`, `CRB`, `SAP`, `SAPHANA`). Different labs
-put that at different depths, so `compose_url` includes whatever prefix your
-lab needs:
+Two composes are involved, and they are intentionally **different variables**:
 
-| Lab | `compose_url` |
-|---|---|
-| TLV (default) | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose` |
-| Scale lab | `http://mirror.scalelab.redhat.com/RHEL10/10.2` (no `compose/` subdir) |
+| Variable | Role | Must be a base/GA compose? |
+|---|---|---|
+| `guest_image_compose_url` | Sources the qcow2 **and** the guest's first-boot (cloud-init) yum repos (`vm_repos`) | **Yes** — needs `BaseOS/x86_64/images/` |
+| `compose_url` | Sources the repos the guest is repointed at *after* boot (`vm_update_repos`, `tasks/repo_update.yml`), then `dnf update` runs against it | No — repo-only composes (e.g. `-updates-*`) are fine |
+
+Both must point at the directory that directly contains the Variant
+directories (`BaseOS`, `AppStream`, `CRB`, `SAP`, `SAPHANA`); different labs
+put that at different depths, so both include whatever prefix your lab needs:
+
+| Lab | `guest_image_compose_url` (default) | `compose_url` (default) |
+|---|---|---|
+| TLV | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose` | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose` |
+| Scale lab | `http://mirror.scalelab.redhat.com/RHEL10/10.2` (no `compose/` subdir) | same |
+
+> **Why two composes:** RHEL's `-updates-*` composes refresh package
+> repodata but do **not** rebuild `BaseOS/x86_64/images/`. Pointing
+> `guest_image_compose_url` (or the old, now-removed single `compose_url`)
+> at a `-updates-*` build 404s on the qcow2:
+> `rhel-guest-image-10.2-updates-<date>....qcow2` does not exist. So the
+> guest is always **installed** from the last GA/base compose
+> (`guest_image_compose_url`), then **updated** in place from whatever
+> newer compose `compose_url` points at (`repo_update.yml` + `dnf update`,
+> see below) — no need to rebuild/re-download a guest image just to pick up
+> newer packages.
 
 `compose_release` (default `10.2`, used for repo names/descriptions) and
 `guest_image_compose_id` (default `10.2-20260507.1`, the exact dated build id
-embedded in the qcow2 filename) are **independent** of `compose_url` — a
+embedded in the qcow2 filename) are **independent** of both compose URLs — a
 mirror's URL does not necessarily encode either the same way a compose's
 does, and a lab like Scale lab mirrors a moving "latest" build under a
-release-only path (`.../10.2/`) with no date in the URL at all. Override all
-three together when switching labs:
-
-> **`-updates-*` composes:** TLV's `RHEL-10.2-updates-*` composes (the
-> `compose_url` default) refresh the yum repos but do **not** rebuild
-> `BaseOS/x86_64/images/` — that qcow2 still lives under the last base
-> compose's dated id. That's why `guest_image_compose_id` intentionally
-> stays pinned to `10.2-20260507.1` even after `compose_url` moves to a
-> newer `-updates-*` build; pointing it at the `-updates-*` id 404s
-> (`rhel-guest-image-10.2-updates-<date>....qcow2` does not exist). Bump
-> `guest_image_compose_id` only when a new **base** (non-`-updates`)
-> compose actually ships a new guest image.
+release-only path (`.../10.2/`) with no date in the URL at all. Keep
+`guest_image_compose_id` paired with `guest_image_compose_url` (a GA/base
+build), never with `compose_url`. Override together when switching
+labs/builds:
 
 ```bash
+-e guest_image_compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' \
 -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' \
 -e compose_release='10.2' \
 -e guest_image_compose_id='10.2-20260408.1'
@@ -122,9 +132,10 @@ three together when switching labs:
 
 | Derived value | Rule |
 |---|---|
-| Remote qcow2 | `{compose_url}/BaseOS/x86_64/images/rhel-guest-image-{guest_image_compose_id}.x86_64.qcow2` |
+| Remote qcow2 | `{guest_image_compose_url}/BaseOS/x86_64/images/rhel-guest-image-{guest_image_compose_id}.x86_64.qcow2` |
 | Local copy | `guest_image_path`, default `/home/kvm/rhel10-2-base.qcow2` (`guest_image_filename`) |
-| Repos | BaseOS, AppStream, CRB, SAP, SAPHANA under `{compose_url}/<Name>/x86_64/os/`, each `skip_if_unavailable` so a lab missing SAP/SAPHANA just skips those two |
+| Install-time repos (`vm_repos`) | BaseOS, AppStream, CRB, SAP, SAPHANA under `{guest_image_compose_url}/<Name>/x86_64/os/`, each `skip_if_unavailable` so a lab missing SAP/SAPHANA just skips those two |
+| Update-time repos (`vm_update_repos`) | Same Variants under `{compose_url}/<Name>/x86_64/os/`, same repo names as `vm_repos` so `repo_update.yml` overwrites them in place |
 
 Only the **local** image file name is independent of the lab. Download
 timeout is `guest_image_download_timeout` (default 3600s); a 1 GiB qcow2
@@ -140,8 +151,9 @@ applies:
   `sap-kvm-vm.lab.eng.tlv2.redhat.com`)
 - Root password SSH (`ssh_pwauth`, `00-sap.conf` before RHEL
   `50-redhat.conf`, plaintext `chpasswd`)
-- Yum repos from `compose_url`, packages from `vm_packages` (includes
-  `libxcrypt-compat` for HCMT) plus `qemu-guest-agent`
+- Yum repos from `guest_image_compose_url` (`vm_repos`), packages from
+  `vm_packages` (includes `libxcrypt-compat` for HCMT) plus
+  `qemu-guest-agent`
 - Filesystem grow on `/dev/vda`
 - SELinux `permissive` (`setenforce 0` equivalent)
 
@@ -157,6 +169,26 @@ installing real packages from 5 real repos on a working network (see below),
 so on a slow mirror this easily exceeds a couple of minutes; a repo that is
 unreachable/misconfigured can also make it stall closer to the full timeout
 per repo before `skip_if_unavailable` gives up on it.
+
+## Package update (after first boot)
+
+`repo_update.yml` runs right after `post_boot.yml`, gated by
+`guest_update_packages` (default `true`):
+
+1. Rewrites the guest's yum repo files (`ansible.builtin.yum_repository`,
+   same repo `name`s as `vm_repos` so this overwrites them in place) to
+   point at `compose_url` instead of `guest_image_compose_url`
+   (`vm_update_repos`).
+2. Runs `dnf update` (`name: '*', state: latest, update_cache: true`) on the
+   guest so it picks up whatever newer packages/errata `compose_url`
+   carries — without re-downloading a guest image or reinstalling from
+   scratch.
+
+`dnf update` runs polled via `async` (`guest_dnf_update_async`, default
+3600s; `guest_dnf_update_poll`, default 15s) since how long it takes depends
+entirely on how far `compose_url` has drifted from
+`guest_image_compose_url`. Set `-e guest_update_packages=false` to leave the
+guest on the packages it was installed with.
 
 ## Guest network / DHCP lease and outbound access
 
@@ -286,19 +318,29 @@ ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
   -e destroy_existing_vm=true
 
-# Download the RHEL guest qcow2 from compose_url (also sets guest yum repos)
+# Download the RHEL guest qcow2 from guest_image_compose_url (also sets the
+# guest's first-boot yum repos); compose_url keeps defaulting to the newer
+# -updates- compose used to dnf update the guest after boot
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
   -e download_guest_image=true \
-  -e compose_url='http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose'
+  -e guest_image_compose_url='http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose'
 
-# Same, but from the Scale lab mirror instead of TLV
+# Same, but from the Scale lab mirror instead of TLV (single mirror serves
+# both roles there, so point both compose vars at it)
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
   -e download_guest_image=true \
+  -e guest_image_compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' \
   -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' \
   -e compose_release='10.2' \
   -e guest_image_compose_id='10.2-20260408.1'
+
+# Skip the post-boot repo repoint + dnf update, leaving the guest on the
+# packages it was installed with
+ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
+  -e vm_root_password='...' \
+  -e guest_update_packages=false
 
 # Cap memory and disk; CPU pinning still follows this host
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
@@ -322,18 +364,20 @@ Useful extra-vars:
 | Variable | Default | Purpose |
 |---|---|---|
 | `vm_root_password` | (required) | Guest root password; never stored in git |
-| `compose_url` | TLV RHEL-10.2-updates-20260928.d.0 compose | Directory containing BaseOS/AppStream/CRB/SAP/SAPHANA |
-| `compose_release` | `10.2` | Repo names/descriptions; independent of `compose_url` |
-| `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; independent of `compose_url` (see `-updates-*` caveat above) |
+| `guest_image_compose_url` | TLV RHEL-10.2-20260507.1 (GA) compose | Sources the qcow2 and first-boot guest repos; needs `BaseOS/x86_64/images/` |
+| `compose_url` | TLV RHEL-10.2-updates-20260928.d.0 compose | Sources the repos the guest is repointed at after boot, then `dnf update` |
+| `compose_release` | `10.2` | Repo names/descriptions; independent of both compose URLs |
+| `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; pair with `guest_image_compose_url`, never with `compose_url` (see `-updates-*` caveat above) |
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
 | `guest_image_filename` | `rhel10-2-base.qcow2` | Local image name only |
+| `guest_update_packages` | `true` | Repoint guest repos at `compose_url` and `dnf update` after boot |
 | `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |
 | `destroy_existing_vm` | `false` | Tear down VM, disk, ISO, `/etc/hosts`, known_hosts |
 | `vm_domain` | `lab.eng.tlv2.redhat.com` | FQDN suffix for `/etc/hosts` |
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `hugepages`, `disk`,
-`cloud_init`, `vm_define`, `post_boot`, `verify`.
+`cloud_init`, `vm_define`, `post_boot`, `repo_update`, `verify`.
 
 After a successful run, from the hypervisor:
 

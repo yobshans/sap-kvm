@@ -59,12 +59,29 @@ hugepages_size_kb: 1048576
 hugepages_per_node: auto
 hugepage_nodes: auto
 
-# --- RHEL compose (image URL and guest yum repos are derived from this) ---
-# compose_url must point at the directory that directly contains the Variant
-# directories (BaseOS/AppStream/CRB/SAP/SAPHANA). Different labs put that at
-# different depths, so include whatever prefix your lab needs, e.g.:
-#   TLV lab:    .../RHEL-10.2-updates-20260928.d.0/compose   (compose has its own subdir)
-#   Scale lab:  http://mirror.scalelab.redhat.com/RHEL10/10.2   (no compose/ subdir)
+# --- RHEL compose (image + install-time repos come from guest_image_compose_url;
+#     compose_url is the "current" compose used to refresh repos and dnf
+#     update the guest after it's up) ---
+#
+# guest_image_compose_url must point at the directory that directly contains
+# the Variant directories (BaseOS/AppStream/CRB/SAP/SAPHANA) AND still ships
+# BaseOS/x86_64/images/ -- i.e. a GA/base compose, not a "-updates-*" compose
+# (those refresh repos but do not rebuild the guest image, see below). The
+# qcow2 (guest_image_url) and the guest's first-boot cloud-init yum repos
+# (vm_repos) both come from here so the installed guest always matches the
+# image it was booted from.
+#   TLV lab:    .../RHEL-10.2-20260507.1/compose            (compose has its own subdir)
+#   Scale lab:  http://mirror.scalelab.redhat.com/RHEL10/10.2  (no compose/ subdir)
+# Override with -e guest_image_compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2'
+guest_image_compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose"
+
+# compose_url is the compose the guest's yum repos get repointed at *after*
+# first boot (tasks/repo_update.yml), followed by `dnf update`, so the guest
+# picks up newer packages/errata without re-baking a new guest image. This
+# can safely be a "-updates-*" compose (it only needs Variant/os/ repodata,
+# not BaseOS/x86_64/images/). Defaults to the same directory shape as
+# guest_image_compose_url; override independently when you want the guest to
+# track a newer compose than the one it was installed from.
 # Override with -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2'
 compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose"
 
@@ -79,20 +96,17 @@ kvm_base_dir: /home/kvm
 libvirt_pool: sap-kvm
 # The exact dated compose build id embedded in the qcow2 filename
 # (rhel-guest-image-<this>.x86_64.qcow2). NOT always derivable from
-# compose_url -- e.g. the Scale lab URL only names the release stream, not
-# the specific dated build currently mirrored there -- so it is its own
-# variable. Override together with compose_url when switching labs:
-#   -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' -e guest_image_compose_id='10.2-20260408.1'
-#
-# The RHEL-10.2-updates-* composes (compose_url default) carry refreshed yum
-# repos but do not rebuild BaseOS/x86_64/images/ -- that qcow2 still ships
-# under the last base compose's dated build id, so this intentionally does
-# NOT track the "-updates-..." id embedded in compose_url. Pointing this at
-# the updates id 404s: rhel-guest-image-10.2-updates-20260928.d.0... does not
-# exist. Override together with compose_url when switching labs/builds.
+# guest_image_compose_url -- e.g. the Scale lab URL only names the release
+# stream, not the specific dated build currently mirrored there -- so it is
+# its own variable. Keep it paired with guest_image_compose_url (a GA/base
+# compose), never with compose_url's "-updates-*" build: "-updates-*"
+# composes do not rebuild BaseOS/x86_64/images/, so
+# rhel-guest-image-10.2-updates-<date>....qcow2 404s. Override together when
+# switching labs/builds:
+#   -e guest_image_compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' -e guest_image_compose_id='10.2-20260408.1'
 guest_image_compose_id: "10.2-20260507.1"
 # Remote qcow2 name follows guest_image_compose_id. Local name does not.
-guest_image_url: "{{ compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/images/rhel-guest-image-{{ guest_image_compose_id }}.x86_64.qcow2"
+guest_image_url: "{{ guest_image_compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/images/rhel-guest-image-{{ guest_image_compose_id }}.x86_64.qcow2"
 guest_image_filename: rhel10-2-base.qcow2
 guest_image_path: "{{ kvm_base_dir }}/{{ guest_image_filename }}"
 vm_disk_size: auto                     # preferred OS disk, reduced to free space if needed
@@ -108,24 +122,48 @@ cloud_init_iso: "{{ kvm_base_dir }}/{{ vm_name }}-cidata.iso"
 vm_network: default
 vm_bridge: ""                   # leave empty to use NAT default network
 
-# --- Yum repos inside the guest (from the same compose as the qcow2) ---
-# skip_if_unavailable (set in templates/user-data.j2) means a lab that does
-# not mirror SAP/SAPHANA just skips those two instead of failing the boot.
+# --- Yum repos inside the guest ---
+# First-boot (cloud-init, templates/user-data.j2) repos: same GA/base compose
+# as the qcow2, so the packages cloud-init installs on first boot are
+# guaranteed to exist. skip_if_unavailable (set in templates/user-data.j2)
+# means a lab that does not mirror SAP/SAPHANA just skips those two instead
+# of failing the boot.
 vm_repos:
   - name: "rhel-{{ compose_major }}-baseos"
     description: "RHEL {{ compose_release }} BaseOS"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/os/"
+    baseurl: "{{ guest_image_compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/os/"
   - name: "rhel-{{ compose_major }}-appstream"
     description: "RHEL {{ compose_release }} AppStream"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/AppStream/x86_64/os/"
+    baseurl: "{{ guest_image_compose_url | regex_replace('/+$', '') }}/AppStream/x86_64/os/"
   - name: "rhel-{{ compose_major }}-crb"
     description: "RHEL {{ compose_release }} CRB"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/CRB/x86_64/os/"
+    baseurl: "{{ guest_image_compose_url | regex_replace('/+$', '') }}/CRB/x86_64/os/"
   - name: "rhel-{{ compose_major }}-sap"
     description: "RHEL {{ compose_release }} SAP"
-    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/SAP/x86_64/os/"
+    baseurl: "{{ guest_image_compose_url | regex_replace('/+$', '') }}/SAP/x86_64/os/"
   - name: "rhel-{{ compose_major }}-saphana"
     description: "RHEL {{ compose_release }} SAPHANA"
+    baseurl: "{{ guest_image_compose_url | regex_replace('/+$', '') }}/SAPHANA/x86_64/os/"
+
+# Post-boot (tasks/repo_update.yml) repos: same repo `name`s as vm_repos
+# above (so the update overwrites the install-time repo files in place)
+# but pointed at compose_url -- typically a newer "-updates-*" compose --
+# so `dnf update` on the guest picks up newer packages/errata.
+vm_update_repos:
+  - name: "rhel-{{ compose_major }}-baseos"
+    description: "RHEL {{ compose_release }} BaseOS (update)"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/os/"
+  - name: "rhel-{{ compose_major }}-appstream"
+    description: "RHEL {{ compose_release }} AppStream (update)"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/AppStream/x86_64/os/"
+  - name: "rhel-{{ compose_major }}-crb"
+    description: "RHEL {{ compose_release }} CRB (update)"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/CRB/x86_64/os/"
+  - name: "rhel-{{ compose_major }}-sap"
+    description: "RHEL {{ compose_release }} SAP (update)"
+    baseurl: "{{ compose_url | regex_replace('/+$', '') }}/SAP/x86_64/os/"
+  - name: "rhel-{{ compose_major }}-saphana"
+    description: "RHEL {{ compose_release }} SAPHANA (update)"
     baseurl: "{{ compose_url | regex_replace('/+$', '') }}/SAPHANA/x86_64/os/"
 
 # Guest packages for verification and SAP HCMT
@@ -166,10 +204,21 @@ vm_packages:
   - lshw
 
 # --- Feature flags ---
-download_guest_image: false     # set true to fetch guest_image_url from compose_url
+download_guest_image: false     # set true to fetch guest_image_url from guest_image_compose_url
 guest_image_download_timeout: 3600
 destroy_existing_vm: false      # set true to tear down existing VM first
 
 # cloud-init installs vm_packages from 5 real yum repos on first boot; on a
 # slow mirror this comfortably exceeds a couple of minutes.
 cloud_init_boot_timeout: 1800
+
+# After first boot, repoint the guest's yum repos at compose_url
+# (tasks/repo_update.yml's vm_update_repos) and run `dnf update` so it picks
+# up newer packages/errata without re-baking a new guest image. Set to
+# false to leave the guest pinned to guest_image_compose_url's packages.
+guest_update_packages: true
+# dnf update on 5 real repos can run long depending on how much has drifted
+# since guest_image_compose_url; polled via async so the play doesn't block
+# the whole ansible-playbook run's normal task timeout handling.
+guest_dnf_update_async: 3600
+guest_dnf_update_poll: 15
