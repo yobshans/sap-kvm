@@ -63,10 +63,10 @@ hugepage_nodes: auto
 # compose_url must point at the directory that directly contains the Variant
 # directories (BaseOS/AppStream/CRB/SAP/SAPHANA). Different labs put that at
 # different depths, so include whatever prefix your lab needs, e.g.:
-#   TLV lab:    .../RHEL-10.2-20260507.1/compose   (compose has its own subdir)
+#   TLV lab:    .../RHEL-10.2-updates-20260928.d.0/compose   (compose has its own subdir)
 #   Scale lab:  http://mirror.scalelab.redhat.com/RHEL10/10.2   (no compose/ subdir)
 # Override with -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2'
-compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose"
+compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose"
 
 # Release used for guest yum repo names/descriptions. Kept independent of
 # compose_url since not every lab's URL encodes the release the same way.
@@ -83,7 +83,7 @@ libvirt_pool: sap-kvm
 # the specific dated build currently mirrored there -- so it is its own
 # variable. Override together with compose_url when switching labs:
 #   -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2' -e guest_image_compose_id='10.2-20260408.1'
-guest_image_compose_id: "10.2-20260507.1"
+guest_image_compose_id: "10.2-updates-20260928.d.0"
 # Remote qcow2 name follows guest_image_compose_id. Local name does not.
 guest_image_url: "{{ compose_url | regex_replace('/+$', '') }}/BaseOS/x86_64/images/rhel-guest-image-{{ guest_image_compose_id }}.x86_64.qcow2"
 guest_image_filename: rhel10-2-base.qcow2

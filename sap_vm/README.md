@@ -93,11 +93,11 @@ lab needs:
 
 | Lab | `compose_url` |
 |---|---|
-| TLV (default) | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose` |
+| TLV (default) | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose` |
 | Scale lab | `http://mirror.scalelab.redhat.com/RHEL10/10.2` (no `compose/` subdir) |
 
 `compose_release` (default `10.2`, used for repo names/descriptions) and
-`guest_image_compose_id` (default `10.2-20260507.1`, the exact dated build id
+`guest_image_compose_id` (default `10.2-updates-20260928.d.0`, the exact dated build id
 embedded in the qcow2 filename) are **independent** of `compose_url` — a
 mirror's URL does not necessarily encode either the same way a compose's
 does, and a lab like Scale lab mirrors a moving "latest" build under a
@@ -280,7 +280,7 @@ ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
   -e download_guest_image=true \
-  -e compose_url='http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose'
+  -e compose_url='http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose'
 
 # Same, but from the Scale lab mirror instead of TLV
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
@@ -312,9 +312,9 @@ Useful extra-vars:
 | Variable | Default | Purpose |
 |---|---|---|
 | `vm_root_password` | (required) | Guest root password; never stored in git |
-| `compose_url` | TLV RHEL-10.2-20260507.1 compose | Directory containing BaseOS/AppStream/CRB/SAP/SAPHANA |
+| `compose_url` | TLV RHEL-10.2-updates-20260928.d.0 compose | Directory containing BaseOS/AppStream/CRB/SAP/SAPHANA |
 | `compose_release` | `10.2` | Repo names/descriptions; independent of `compose_url` |
-| `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; independent of `compose_url` |
+| `guest_image_compose_id` | `10.2-updates-20260928.d.0` | Dated build id in the qcow2 filename; independent of `compose_url` |
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
 | `guest_image_filename` | `rhel10-2-base.qcow2` | Local image name only |
 | `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |
