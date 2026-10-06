@@ -13,6 +13,8 @@
       - python3-lxml
       - numactl
       - sshpass
+      - python3-pip
+      - python3-packaging
     state: present
 
 - name: Ensure pycdlib for cloud-init ISO creation
