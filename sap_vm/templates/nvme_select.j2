@@ -1,0 +1,18 @@
+{#- Split lsblk's NVMe disks (TYPE=disk, TRAN=nvme) into "free" (no
+    partitions/LVM/mountpoint -- safe to detach from the hypervisor) and
+    "in_use" (already backing hypervisor storage, e.g. a root/swap volume
+    group laid directly on the whole NVMe namespace with no partition
+    table -- refuse to touch these). nvme_lsblk_devices is the top-level
+    "blockdevices" array from `lsblk -J -o NAME,MODEL,SIZE,TYPE,TRAN,MOUNTPOINT`. -#}
+free:
+{% for dev in nvme_lsblk_devices %}
+{% if dev.type == 'disk' and dev.tran == 'nvme' and not dev.mountpoint and not (dev.children | default([])) %}
+  - "{{ dev.name }}"
+{% endif %}
+{% endfor %}
+in_use:
+{% for dev in nvme_lsblk_devices %}
+{% if dev.type == 'disk' and dev.tran == 'nvme' and (dev.mountpoint or (dev.children | default([]))) %}
+  - "{{ dev.name }}"
+{% endif %}
+{% endfor %}

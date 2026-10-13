@@ -15,6 +15,7 @@
       - sshpass
       - python3-pip
       - python3-packaging
+      - pciutils
     state: present
 
 - name: Ensure pycdlib for cloud-init ISO creation

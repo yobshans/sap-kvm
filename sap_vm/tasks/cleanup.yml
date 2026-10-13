@@ -30,6 +30,13 @@
   loop:
     - "{{ vm_disk_path }}"
     - "{{ vm_disk_raw_path }}"
+    - "{{ vm_data_disk_path }}"
+
+# NVMe passthrough devices (vm_nvme=true) are physical hardware, not a file
+# under kvm_base_dir -- nothing to remove here. They are left bound to
+# vfio-pci so a VM recreated right after reuses them without re-binding;
+# unbind manually (see README.md) to hand a device back to the host's nvme
+# driver.
 
 - name: Remove old cloud-init volume
   community.libvirt.virt_volume:

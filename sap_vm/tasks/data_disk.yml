@@ -1,0 +1,42 @@
+---
+# ============================================================================
+# Data disk — blank local qcow2 volume for guest data (SAP HANA data/log)
+#
+# Alternative to tasks/nvme.yml. Only runs when vm_nvme is false. Reuses the
+# same libvirt pool tasks/disk.yml already set up for the OS disk
+# (libvirt_pool fact), just a second, empty volume at vm_data_disk_path
+# sized by vm_data_disk_size (defaults to vm_disk_size). vm_define.yml
+# attaches it as vdb (vm-domain.xml.j2).
+# ============================================================================
+
+- name: Check if the data disk already exists
+  ansible.builtin.stat:
+    path: "{{ vm_data_disk_path }}"
+  register: vm_data_disk
+
+- name: Create blank data disk volume
+  community.libvirt.virt_volume:
+    pool: "{{ libvirt_pool }}"
+    state: present
+    xml: |
+      <volume>
+        <name>{{ vm_name }}-data.qcow2</name>
+        <capacity unit="{{ vm_data_disk_size[-1] | upper }}">{{ vm_data_disk_size[:-1] }}</capacity>
+        <target>
+          <format type="qcow2"/>
+          <path>{{ vm_data_disk_path }}</path>
+        </target>
+      </volume>
+  when: not vm_data_disk.stat.exists
+
+- name: Stat data disk after prepare
+  ansible.builtin.stat:
+    path: "{{ vm_data_disk_path }}"
+  register: data_disk_info
+
+- name: Display data disk info
+  ansible.builtin.debug:
+    msg:
+      - "path: {{ vm_data_disk_path }}"
+      - "size: {{ data_disk_info.stat.size }} bytes"
+      - "requested: {{ vm_data_disk_size }}"
