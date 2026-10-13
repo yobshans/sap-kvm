@@ -59,6 +59,13 @@ hugepages_size_kb: 1048576
 hugepages_per_node: auto
 hugepage_nodes: auto
 
+# Pre-fault all guest memory at VM start (<allocation mode='immediate'/> in
+# <memoryBacking>, vm-domain.xml.j2) instead of faulting pages in on first
+# touch, so page-fault overhead doesn't skew early benchmark numbers.
+# Requires libvirt >= 6.0.0 / QEMU >= 4.0; set to false if an older libvirt
+# rejects the <allocation> element.
+vm_memory_prefault: true
+
 # --- RHEL compose (image + install-time repos come from guest_image_compose_url;
 #     compose_url is the "current" compose used to refresh repos and dnf
 #     update the guest after it's up) ---

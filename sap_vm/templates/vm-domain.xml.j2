@@ -71,6 +71,11 @@
       <page size='{{ hugepages_size_kb }}' unit='KiB' nodeset='{{ n }}'/>
 {% endfor %}
     </hugepages>
+{% if vm_memory_prefault | bool %}
+    <!-- Fault in all guest memory at boot instead of on first touch, so
+         page-fault overhead doesn't skew early benchmark results -->
+    <allocation mode='immediate'/>
+{% endif %}
   </memoryBacking>
 
   <devices>

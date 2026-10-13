@@ -60,6 +60,13 @@ runtime reservation fails, the role stops and prints `grubby` commands. Set
 `nr_hugepages` on the **host** kernel command line, **reboot the hypervisor**,
 then re-run.
 
+`vm_memory_prefault` (default `true`) adds `<allocation mode='immediate'/>`
+inside `<memoryBacking>` in the domain XML, forcing all guest memory to be
+faulted in at VM boot instead of on first touch, so page-fault overhead
+doesn't skew early benchmark numbers. Requires libvirt ≥ 6.0.0 / QEMU ≥ 4.0;
+set `-e vm_memory_prefault=false` if an older libvirt rejects the
+`<allocation>` element.
+
 Inside the guest, transparent hugepages are set to `never`
 (`/sys/kernel/mm/transparent_hugepage/enabled`) and persisted with
 `/etc/tmpfiles.d/sap-thp.conf`.
@@ -375,6 +382,7 @@ Useful extra-vars:
 | `destroy_existing_vm` | `false` | Tear down VM, disk, ISO, `/etc/hosts`, known_hosts |
 | `vm_domain` | `lab.eng.tlv2.redhat.com` | FQDN suffix for `/etc/hosts` |
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
+| `vm_memory_prefault` | `true` | Add `<allocation mode='immediate'/>` to pre-fault all guest memory at boot |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `hugepages`, `disk`,
 `cloud_init`, `vm_define`, `post_boot`, `repo_update`, `verify`.
