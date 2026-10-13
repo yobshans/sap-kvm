@@ -1,0 +1,105 @@
+---
+# ============================================================================
+# Raw convert — convert the qcow2 VM disk to raw (guest_raw_image=true)
+#
+# Idempotent for both a fresh VM (disk.yml just created/resized the qcow2;
+# nothing is defined/running yet) and an already-running VM being switched
+# over to raw:
+#   virsh shutdown sap-kvm-vm
+#   qemu-img convert -f qcow2 -O raw /home/kvm/sap-kvm-vm.qcow2 /home/kvm/sap-kvm-vm.raw
+# vm_define.yml (included right after this file) regenerates the domain XML
+# with driver type='raw' and <source file='.../sap-kvm-vm.raw'/> whenever the
+# VM isn't already running, then redefines and starts it -- so there is no
+# explicit "virsh start" here.
+# ============================================================================
+
+- name: Raw disk conversion
+  block:
+    - name: Stat the qcow2 and raw VM disks
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ vm_disk_path }}"
+        - "{{ vm_disk_raw_path }}"
+      loop_control:
+        label: "{{ item }}"
+      register: raw_convert_disk_stats
+
+    - name: Set raw conversion facts
+      ansible.builtin.set_fact:
+        vm_disk_qcow2_exists: "{{ raw_convert_disk_stats.results[0].stat.exists }}"
+        vm_disk_raw_exists: "{{ raw_convert_disk_stats.results[1].stat.exists }}"
+
+    - name: Fail if neither a qcow2 nor a raw VM disk exists to convert
+      ansible.builtin.fail:
+        msg: >-
+          guest_raw_image=true but neither {{ vm_disk_raw_path }} nor
+          {{ vm_disk_path }} exists. tasks/disk.yml (included right before
+          this file) should have created/resized {{ vm_disk_path }} --
+          check download_guest_image / guest_image_path.
+      when:
+        - not vm_disk_raw_exists
+        - not vm_disk_qcow2_exists
+
+    - name: Shut down and convert the qcow2 VM disk to raw
+      when:
+        - not vm_disk_raw_exists
+        - vm_disk_qcow2_exists
+      block:
+        - name: List defined VMs (raw conversion)
+          community.libvirt.virt:
+            command: list_vms
+          register: raw_defined_vms
+
+        - name: Get VM status before raw conversion
+          community.libvirt.virt:
+            command: status
+            name: "{{ vm_name }}"
+          register: raw_vm_state
+          when: vm_name in (raw_defined_vms.list_vms | default([]))
+          failed_when: false
+
+        - name: Shut down the VM before converting its disk to raw
+          community.libvirt.virt:
+            name: "{{ vm_name }}"
+            state: shutdown
+          when: (raw_vm_state.status | default('')) == 'running'
+
+        - name: Wait for the VM to shut down
+          community.libvirt.virt:
+            command: status
+            name: "{{ vm_name }}"
+          register: raw_shutdown_wait
+          until: (raw_shutdown_wait.status | default('')) == 'shutdown'
+          retries: 30
+          delay: 5
+          when: (raw_vm_state.status | default('')) == 'running'
+
+        - name: Convert qcow2 VM disk to raw
+          ansible.builtin.command:
+            cmd: >-
+              qemu-img convert -f qcow2 -O raw
+              {{ vm_disk_path }} {{ vm_disk_raw_path }}
+            creates: "{{ vm_disk_raw_path }}"
+
+        - name: Check raw conversion result
+          ansible.builtin.stat:
+            path: "{{ vm_disk_raw_path }}"
+          register: vm_disk_raw_result
+
+        - name: Fail if raw conversion did not produce the expected file
+          ansible.builtin.fail:
+            msg: "qemu-img convert ran but {{ vm_disk_raw_path }} does not exist."
+          when: not vm_disk_raw_result.stat.exists
+
+        - name: Remove the pre-conversion qcow2 disk
+          ansible.builtin.file:
+            path: "{{ vm_disk_path }}"
+            state: absent
+          when: guest_raw_image_remove_qcow2 | bool
+
+    - name: Show raw disk status
+      ansible.builtin.debug:
+        msg: >-
+          Guest disk is {{ 'already' if vm_disk_raw_exists else 'now' }} raw
+          at {{ vm_disk_raw_path }}.

@@ -42,13 +42,29 @@
     path: "{{ vm_disk_path }}"
   register: vm_disk
 
+- name: Check if the raw VM disk already exists
+  ansible.builtin.stat:
+    path: "{{ vm_disk_raw_path }}"
+  register: vm_disk_raw_precheck
+  when: guest_raw_image | bool
+
+- name: Determine whether the qcow2 disk still needs preparing
+  # Once guest_raw_image has converted vm_disk_path to vm_disk_raw_path and
+  # (optionally) removed the qcow2, there's no need to re-copy/resize a
+  # fresh multi-GiB qcow2 every run just to hand it straight back to
+  # raw_convert.yml's no-op "raw already exists" path.
+  ansible.builtin.set_fact:
+    vm_qcow2_disk_needed: "{{ not (guest_raw_image | bool and (vm_disk_raw_precheck.stat.exists | default(false))) }}"
+
 - name: Copy guest image to VM disk
   ansible.builtin.copy:
     src: "{{ guest_image_path }}"
     dest: "{{ vm_disk_path }}"
     remote_src: true
     mode: "0644"
-  when: not vm_disk.stat.exists
+  when:
+    - not vm_disk.stat.exists
+    - vm_qcow2_disk_needed | bool
 
 - name: Gather libvirt storage pool facts
   community.libvirt.virt_pool:
@@ -110,12 +126,15 @@
           <path>{{ vm_disk_path }}</path>
         </target>
       </volume>
-  when: not vm_disk.stat.exists
+  when:
+    - not vm_disk.stat.exists
+    - vm_qcow2_disk_needed | bool
 
 - name: Stat VM disk after prepare
   ansible.builtin.stat:
     path: "{{ vm_disk_path }}"
   register: disk_info
+  when: vm_qcow2_disk_needed | bool
 
 - name: Display disk info
   ansible.builtin.debug:
@@ -123,3 +142,4 @@
       - "path: {{ vm_disk_path }}"
       - "size: {{ disk_info.stat.size }} bytes"
       - "requested: {{ vm_disk_size }}"
+  when: vm_qcow2_disk_needed | bool

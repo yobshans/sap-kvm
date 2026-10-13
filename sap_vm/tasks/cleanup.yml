@@ -23,10 +23,13 @@
   when: vm_name in (defined_vms.list_vms | default([]))
   failed_when: false
 
-- name: Remove old VM disk
+- name: Remove old VM disk(s)
   ansible.builtin.file:
-    path: "{{ vm_disk_path }}"
+    path: "{{ item }}"
     state: absent
+  loop:
+    - "{{ vm_disk_path }}"
+    - "{{ vm_disk_raw_path }}"
 
 - name: Remove old cloud-init volume
   community.libvirt.virt_volume:

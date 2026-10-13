@@ -114,6 +114,29 @@ vm_disk_preferred_gib: 150
 vm_disk_reserve_gib: 32                # keep this much free on the image filesystem
 vm_disk_path: "{{ kvm_base_dir }}/{{ vm_name }}.qcow2"
 
+# --- Raw guest disk (optional) ---
+# disk.yml always downloads/copies/resizes vm_disk_path as qcow2 above --
+# RHEL's cloud qcow2 is the only format that ships. When guest_raw_image is
+# true, tasks/raw_convert.yml (runs right after disk.yml) converts that
+# qcow2 to a raw file at vm_disk_raw_path:
+#   virsh shutdown sap-kvm-vm   # only if it was already running
+#   qemu-img convert -f qcow2 -O raw /home/kvm/sap-kvm-vm.qcow2 /home/kvm/sap-kvm-vm.raw
+# vm_define.yml (right after that) then regenerates the domain XML with
+# driver type='raw' and <source file='.../sap-kvm-vm.raw'/>, redefines, and
+# starts the VM -- so there is no separate "virsh start" step. Idempotent:
+# if vm_disk_raw_path already exists, nothing is shut down or reconverted.
+guest_raw_image: false
+# Keep the pre-conversion qcow2 around after conversion (it will NOT stay in
+# sync with the guest once it's running from the .raw file -- it's a
+# point-in-time fallback only). Set true to delete it and free the space.
+guest_raw_image_remove_qcow2: false
+vm_disk_raw_path: "{{ kvm_base_dir }}/{{ vm_name }}.raw"
+vm_disk_driver_type: "{{ 'raw' if guest_raw_image | bool else 'qcow2' }}"
+# Path actually attached to the VM domain (vm-domain.xml.j2) -- vm_disk_path
+# (qcow2) is always what disk.yml downloads/resizes into; this points at
+# vm_disk_raw_path instead once guest_raw_image converts it.
+vm_disk_active_path: "{{ vm_disk_raw_path if guest_raw_image | bool else vm_disk_path }}"
+
 # --- Cloud-init ---
 cloud_init_dir: "{{ kvm_base_dir }}/cloud-init"
 cloud_init_iso: "{{ kvm_base_dir }}/{{ vm_name }}-cidata.iso"
