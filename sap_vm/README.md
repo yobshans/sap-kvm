@@ -134,12 +134,27 @@ always exists — it's what the guest boots from. `vm_nvme` only controls a
 2. `lsblk -o NAME,MODEL,SIZE,TYPE,TRAN,MOUNTPOINT` finds every `TYPE=disk`,
    `TRAN=nvme` device, then splits them into:
    - **free** — no mountpoint and no `children` (no partitions, no LVM) —
-     eligible for passthrough.
+     eligible for passthrough. For example, on a host where the OS lives
+     entirely on `sda` and the NVMe has never been touched:
+     ```
+     NAME                               MODEL                                  SIZE TYPE TRAN   MOUNTPOINT
+     sda                                PERC H740P Mini                      446.6G disk
+     ├─sda1                                                                      1M part
+     ├─sda2                                                                    512M part        /boot
+     └─sda3                                                                  446.1G part
+       ├─vg_f20--h07--000--r640-lv_root                                      438.1G lvm         /
+       └─vg_f20--h07--000--r640-lv_swap                                          8G lvm         [SWAP]
+     sdb                                PERC H740P Mini                        1.7T disk
+     sdc                                PERC H740P Mini                        1.7T disk
+     nvme0n1                            Dell Express Flash PM1725b 3.2TB SFF   2.9T disk nvme
+     ```
+     `nvme0n1` has no `MOUNTPOINT` and no child rows at all → **free**.
    - **in_use** — already backing the hypervisor itself (e.g. a root/swap
      volume group laid directly on the whole NVMe namespace with no
-     partition table, as in the `lsblk` example in the PR this feature came
-     from). These are never touched; the role fails if that's *all* that
-     was found, rather than silently detaching storage the hypervisor needs.
+     partition table, if the OS install picked the NVMe instead of a SAS
+     disk for `sda`'s role above). These are never touched; the role fails
+     if that's *all* that was found, rather than silently detaching storage
+     the hypervisor needs.
 3. For each free NVMe namespace, resolve its controller's PCI address via
    `readlink -f /sys/class/nvme/nvmeN/device`, and its vendor:device ID via
    `lspci -ns`.
