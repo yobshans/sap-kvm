@@ -73,6 +73,37 @@ under `/home/kvm` is tight (`vm_disk_reserve_gib` left free). Override with
 If a libvirt pool already owns `kvm_base_dir` (this host uses pool `kvm` on
 `/home/kvm`), that pool is reused instead of creating `sap-kvm`.
 
+#### Raw disk format (`guest_raw_image`)
+
+The VM disk is qcow2 by default (same format as the downloaded RHEL guest
+image). Set `-e guest_raw_image=true` to run the guest off a raw disk
+instead — some SAP HANA storage guidance prefers raw to skip qcow2's own
+I/O layer. `tasks/raw_convert.yml` runs right after disk prep:
+
+1. If `vm_disk_raw_path` (`{{ kvm_base_dir }}/{{ vm_name }}.raw`) already
+   exists, it's a no-op — idempotent on repeated runs.
+2. Otherwise, if the VM is currently running, it's shut down
+   (`community.libvirt.virt`, `state: shutdown` — i.e. `virsh shutdown`),
+   waiting until `virsh domstate` reports `shut off`.
+3. `qemu-img convert -f qcow2 -O raw {{ vm_disk_path }} {{ vm_disk_raw_path }}`.
+4. `vm_define.yml` (right after) regenerates the domain XML with
+   `<driver name='qemu' type='raw' .../>` and
+   `<source file='{{ vm_disk_raw_path }}'/>`, redefines, and starts the VM —
+   so there's no separate "virsh start" step in `raw_convert.yml` itself.
+
+This works the same way whether `guest_raw_image=true` is set on a brand
+new VM (disk.yml just created the qcow2; nothing is running yet, so step 2
+is skipped) or flipped on for an already-running qcow2 VM (steps 2–4 apply).
+
+By default the pre-conversion qcow2 is **kept** (`guest_raw_image_remove_qcow2:
+false`) as a point-in-time fallback — it will *not* stay in sync with the
+guest once it's running from the `.raw` file. Set
+`-e guest_raw_image_remove_qcow2=true` to delete it after a successful
+conversion and free the space; once deleted, `tasks/disk.yml` stops
+re-copying a fresh qcow2 on later runs (it checks whether the raw disk
+already exists first). `-e destroy_existing_vm=true` removes both the
+`.qcow2` and `.raw` files regardless of which one is currently in use.
+
 ### Clock and CPU flags
 
 TSC frequency is discovered from the host (`tsc_freq_khz` or kernel
@@ -348,6 +379,12 @@ ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_memory_mib=131072 \
   -e vm_disk_size=150G
 
+# Run the guest off a raw disk instead of qcow2 (converts after disk prep;
+# shuts the VM down first if it was already running qcow2)
+ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
+  -e vm_root_password='...' \
+  -e guest_raw_image=true
+
 # Limit vCPUs (must divide evenly by NUMA nodes × threads)
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
@@ -371,13 +408,16 @@ Useful extra-vars:
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
 | `guest_image_filename` | `rhel10-2-base.qcow2` | Local image name only |
 | `guest_update_packages` | `true` | Repoint guest repos at `compose_url` and `dnf update` after boot |
+| `guest_raw_image` | `false` | Run the guest off `vm_disk_raw_path` (raw) instead of `vm_disk_path` (qcow2) |
+| `guest_raw_image_remove_qcow2` | `false` | Delete the pre-conversion qcow2 after a successful raw conversion |
 | `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |
-| `destroy_existing_vm` | `false` | Tear down VM, disk, ISO, `/etc/hosts`, known_hosts |
+| `destroy_existing_vm` | `false` | Tear down VM, disk(s), ISO, `/etc/hosts`, known_hosts |
 | `vm_domain` | `lab.eng.tlv2.redhat.com` | FQDN suffix for `/etc/hosts` |
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `hugepages`, `disk`,
-`cloud_init`, `vm_define`, `post_boot`, `repo_update`, `verify`.
+`raw_convert`, `cloud_init`, `vm_define`, `post_boot`, `repo_update`,
+`verify`.
 
 After a successful run, from the hypervisor:
 

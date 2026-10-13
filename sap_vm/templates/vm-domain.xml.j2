@@ -84,8 +84,8 @@
 
     <!-- VM disk: virtio-blk, cache=none for SAP I/O -->
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2' cache='none' io='native'{% if (vm_iothreads | int) > 0 %} iothread='1'{% endif %}/>
-      <source file='{{ vm_disk_path }}'/>
+      <driver name='qemu' type='{{ vm_disk_driver_type }}' cache='none' io='native'{% if (vm_iothreads | int) > 0 %} iothread='1'{% endif %}/>
+      <source file='{{ vm_disk_active_path }}'/>
       <target dev='vda' bus='virtio'/>
     </disk>
 

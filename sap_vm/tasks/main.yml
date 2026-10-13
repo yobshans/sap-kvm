@@ -27,6 +27,11 @@
   ansible.builtin.include_tasks: disk.yml
   tags: [disk]
 
+- name: Include raw disk conversion (when enabled)
+  ansible.builtin.include_tasks: raw_convert.yml
+  when: guest_raw_image | bool
+  tags: [raw_convert]
+
 - name: Include cloud-init setup
   ansible.builtin.include_tasks: cloud_init.yml
   tags: [cloud_init]
