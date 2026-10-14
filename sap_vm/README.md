@@ -137,7 +137,7 @@ put that at different depths, so both include whatever prefix your lab needs:
 
 | Lab | `guest_image_compose_url` (default) | `compose_url` (default) |
 |---|---|---|
-| TLV | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose` | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20260928.d.0/compose` |
+| TLV | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose` | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20261012.d.0/compose` |
 | Scale lab | `http://mirror.scalelab.redhat.com/RHEL10/10.2` (no `compose/` subdir) | same |
 
 > **Why two composes:** RHEL's `-updates-*` composes refresh package
@@ -409,7 +409,7 @@ Useful extra-vars:
 |---|---|---|
 | `vm_root_password` | (required) | Guest root password; never stored in git |
 | `guest_image_compose_url` | TLV RHEL-10.2-20260507.1 (GA) compose | Sources the qcow2 and first-boot guest repos; needs `BaseOS/x86_64/images/` |
-| `compose_url` | TLV RHEL-10.2-updates-20260928.d.0 compose | Sources the repos the guest is repointed at after boot, then `dnf update` |
+| `compose_url` | TLV RHEL-10.2-updates-20261012.d.0 compose | Sources the repos the guest is repointed at after boot, then `dnf update` |
 | `compose_release` | `10.2` | Repo names/descriptions; independent of both compose URLs |
 | `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; pair with `guest_image_compose_url`, never with `compose_url` (see `-updates-*` caveat above) |
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
