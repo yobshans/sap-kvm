@@ -131,7 +131,19 @@ always exists — it's what the guest boots from. `vm_nvme` only controls a
    grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
    reboot
    ```
-2. `lsblk -o NAME,MODEL,SIZE,TYPE,TRAN,MOUNTPOINT` finds every `TYPE=disk`,
+2. Discovery is **PCI-first, not `lsblk`-first**: `lspci -D -d ::0108`
+   enumerates every NVMe-class PCI controller regardless of which driver
+   currently owns it. This matters because `lsblk`/`/sys/class/nvme` only
+   show controllers currently bound to the host's `nvme` driver — once a
+   controller is already bound to `vfio-pci` (from a previous run of this
+   role, or because it was bound by hand ahead of time following the
+   manual procedure below), it has no `/dev/nvmeXn1` node at all and is
+   invisible to `lsblk`. Relying on `lsblk` alone would then wrongly report
+   "no NVMe device found" on every run *after* the first successful bind —
+   `lspci` sees the controller either way, so it's reused as-is without
+   re-checking anything.
+3. For controllers **still owned by the `nvme` driver** (not yet bound),
+   `lsblk -o NAME,MODEL,SIZE,TYPE,TRAN,MOUNTPOINT` finds every `TYPE=disk`,
    `TRAN=nvme` device, then splits them into:
    - **free** — no mountpoint and no `children` (no partitions, no LVM) —
      eligible for passthrough. For example, on a host where the OS lives
@@ -155,22 +167,25 @@ always exists — it's what the guest boots from. `vm_nvme` only controls a
      disk for `sda`'s role above). These are never touched; the role fails
      if that's *all* that was found, rather than silently detaching storage
      the hypervisor needs.
-3. For each free NVMe namespace, resolve its controller's PCI address via
-   `readlink -f /sys/class/nvme/nvmeN/device`, and its vendor:device ID via
-   `lspci -ns`.
-4. `modprobe vfio-pci`, then (unless already bound) unbind the device from
-   its current driver and bind it to `vfio-pci`:
+4. The final passthrough candidate list is **already-vfio-pci-bound
+   controllers (step 2) + lsblk-eligible controllers (step 3)**. Fails if
+   that combined list is empty (every NVMe controller found is either
+   backing the hypervisor or there's no NVMe hardware at all).
+5. Gets each candidate's vendor:device ID via `lspci -ns` (works regardless
+   of current driver), then `modprobe vfio-pci` and — unless a controller
+   is already on `vfio-pci` from step 2 — unbinds it from its current
+   driver and binds it to `vfio-pci`:
    ```bash
    echo "$NVME_PCI" > /sys/bus/pci/devices/$NVME_PCI/driver/unbind
    echo "vfio-pci"  > /sys/bus/pci/devices/$NVME_PCI/driver_override
    echo "$NVME_PCI" > /sys/bus/pci/drivers/vfio-pci/bind
    ```
-5. Persists the binding across a hypervisor reboot:
+6. Persists the binding across a hypervisor reboot:
    `/etc/modprobe.d/vfio.conf` (`options vfio-pci ids=<vendor:device,...>`),
    `/etc/modules-load.d/vfio-pci.conf` (`vfio-pci`), then `dracut -f` (only
    when either file actually changed).
-6. `vm-domain.xml.j2` adds one `<hostdev mode='subsystem' type='pci'
-   managed='yes'>` per resolved PCI address; `managed='yes'` lets libvirt
+7. `vm-domain.xml.j2` adds one `<hostdev mode='subsystem' type='pci'
+   managed='yes'>` per candidate PCI address; `managed='yes'` lets libvirt
    itself detach/reattach the device from `vfio-pci` around VM start/stop,
    so no extra "give it back" step is needed between runs.
 

@@ -1,0 +1,24 @@
+{#- Classify each PCI NVMe controller that is still owned by the host's
+    "nvme" driver (nvme_needs_lsblk_check) as eligible or in_use, based on
+    whether ANY of its block namespaces (nvme<N>n<X>) showed up in
+    nvme_selection.in_use (tasks/nvme.yml, via nvme_select.j2). A
+    controller with no matching namespace in either lsblk list at all
+    (nvme_pci_to_ctrl[addr] blank -- e.g. attached but no namespace, or no
+    driver bound) has nothing to conflict with, so it's treated as
+    eligible too. #}
+eligible:
+{% for addr in nvme_needs_lsblk_check %}
+{% set ctrl = nvme_pci_to_ctrl[addr] | default('', true) %}
+{% set ctrl_in_use = (nvme_selection.in_use | select('match', '^' + ctrl + 'n[0-9]+$') | list) if ctrl else [] %}
+{% if ctrl_in_use | length == 0 %}
+  - "{{ addr }}"
+{% endif %}
+{% endfor %}
+in_use:
+{% for addr in nvme_needs_lsblk_check %}
+{% set ctrl = nvme_pci_to_ctrl[addr] | default('', true) %}
+{% set ctrl_in_use = (nvme_selection.in_use | select('match', '^' + ctrl + 'n[0-9]+$') | list) if ctrl else [] %}
+{% if ctrl_in_use | length > 0 %}
+  - "{{ addr }}"
+{% endif %}
+{% endfor %}
