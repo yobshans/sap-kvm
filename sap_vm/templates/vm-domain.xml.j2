@@ -94,6 +94,15 @@
       <target dev='vda' bus='virtio'/>
     </disk>
 
+{% if not vm_nvme | bool %}
+    <!-- Secondary data disk (local qcow2, SAP HANA data/log): virtio-blk, cache=none -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none' io='native'{% if (vm_iothreads | int) > 0 %} iothread='1'{% endif %}/>
+      <source file='{{ vm_data_disk_path }}'/>
+      <target dev='vdb' bus='virtio'/>
+    </disk>
+{% endif %}
+
     <!-- Cloud-init seed ISO -->
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
@@ -107,6 +116,17 @@
       <source network='{{ vm_network }}'/>
       <model type='virtio'/>
     </interface>
+
+{% if vm_nvme | bool %}
+    <!-- NVMe PCI passthrough (vfio-pci), discovered/bound by tasks/nvme.yml -->
+{% for hd in vm_nvme_hostdevs %}
+    <hostdev mode='subsystem' type='pci' managed='yes'>
+      <source>
+        <address domain='{{ hd.domain }}' bus='{{ hd.bus }}' slot='{{ hd.slot }}' function='{{ hd.function }}'/>
+      </source>
+    </hostdev>
+{% endfor %}
+{% endif %}
 
     <!-- RNG for entropy -->
     <rng model='virtio'>

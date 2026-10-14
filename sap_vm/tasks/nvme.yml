@@ -1,0 +1,304 @@
+---
+# ============================================================================
+# NVMe PCI passthrough — discover an unused hypervisor NVMe device and bind
+# it to vfio-pci so it can be attached to the guest as a <hostdev> (vm_nvme).
+#
+# Discovery is PCI-first, not lsblk-first: `lspci -d ::0108` enumerates every
+# NVMe-class PCI controller regardless of which driver currently owns it.
+# This matters because `lsblk`/`/sys/class/nvme` only show controllers that
+# are CURRENTLY bound to the host's "nvme" driver -- once a controller is
+# bound to vfio-pci (by a previous successful run of this role, OR by
+# someone running the manual bind procedure below by hand ahead of time),
+# it has no /dev/nvmeXn1 node at all and is invisible to lsblk. Relying on
+# lsblk alone would then wrongly report "no NVMe device found" on every run
+# after the first successful bind -- lspci sees it either way.
+#
+# For controllers still owned by the "nvme" driver, lsblk is used to make
+# sure they are actually unused (no partitions/LVM/mountpoint) before
+# touching them -- see tasks/data_disk.yml's sibling, templates/nvme_select.j2
+# and templates/nvme_classify.j2.
+#
+# Alternative to tasks/data_disk.yml's local qcow2 data disk. Mirrors the
+# manual vfio-pci bind procedure:
+#   NVME_PCI=$(lspci -D | grep "Non-Volatile" | awk '{print $1}')
+#   NVME_ID=$(lspci -ns $NVME_PCI | awk '{print $3}')
+#   modprobe vfio-pci
+#   echo "$NVME_PCI" > /sys/bus/pci/devices/$NVME_PCI/driver/unbind
+#   echo "vfio-pci" > /sys/bus/pci/devices/$NVME_PCI/driver_override
+#   echo "$NVME_PCI" > /sys/bus/pci/drivers/vfio-pci/bind
+# then persists it (so a hypervisor reboot doesn't hand the device back to
+# the nvme driver before libvirt starts the guest):
+#   echo "options vfio-pci ids=$NVME_ID" > /etc/modprobe.d/vfio.conf
+#   echo "vfio-pci" > /etc/modules-load.d/vfio-pci.conf
+#   dracut -f
+#
+# Needs IOMMU enabled on the HYPERVISOR kernel first (reboot required):
+#   grubby --update-kernel=ALL --args="intel_iommu=on iommu=pt"   # Intel
+#   grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
+# ============================================================================
+
+- name: Check hypervisor IOMMU groups are present
+  ansible.builtin.find:
+    paths: /sys/kernel/iommu_groups
+    file_type: directory
+  register: nvme_iommu_groups
+
+- name: Fail if IOMMU is not enabled on the hypervisor
+  ansible.builtin.fail:
+    msg: >-
+      vm_nvme=true requires IOMMU to be enabled on the HYPERVISOR kernel,
+      but no /sys/kernel/iommu_groups entries were found. Enable it and
+      reboot the hypervisor, then re-run this playbook:
+        grubby --update-kernel=ALL --args="intel_iommu=on iommu=pt"   # Intel
+        grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
+        reboot
+  when: nvme_iommu_groups.files | length == 0
+
+- name: Ensure the vfio-pci kernel module is loaded
+  community.general.modprobe:
+    name: vfio-pci
+    state: present
+
+# --- Phase 1: enumerate every NVMe-class PCI controller, any driver ---
+
+- name: Enumerate NVMe-class PCI controllers (class 0108, any current driver)
+  ansible.builtin.command:
+    cmd: lspci -D -d ::0108
+  register: nvme_lspci_all
+  changed_when: false
+
+- name: Fail if this hypervisor has no NVMe hardware at all
+  ansible.builtin.fail:
+    msg: >-
+      vm_nvme=true but no PCI device of class 0108 (Non-Volatile memory
+      controller) was found on this hypervisor (lspci -D -d ::0108). This
+      host has no NVMe hardware at all.
+  when: nvme_lspci_all.stdout_lines | length == 0
+
+- name: Extract PCI addresses of all NVMe-class controllers
+  ansible.builtin.set_fact:
+    nvme_all_pci_addrs: "{{ nvme_lspci_all.stdout_lines | map('regex_search', '^\\S+') | list }}"
+
+- name: Show NVMe-class PCI controllers found
+  ansible.builtin.debug:
+    msg: "{{ nvme_all_pci_addrs }}"
+
+- name: Check current driver for every NVMe-class PCI controller
+  ansible.builtin.command:
+    cmd: "readlink -f /sys/bus/pci/devices/{{ item }}/driver"
+  loop: "{{ nvme_all_pci_addrs }}"
+  loop_control:
+    label: "{{ item }}"
+  register: nvme_all_drivers
+  changed_when: false
+  failed_when: false
+
+- name: Split controllers already bound to vfio-pci (reused as-is) from the rest
+  # Already bound to vfio-pci -- from a previous run of this role, or a
+  # manual pre-bind -- means no /dev/nvmeXn1 exists for it any more, so
+  # there's nothing left for lsblk to check; trust it and reuse it.
+  # Everything else (still "nvme", some other driver, or no driver at all)
+  # needs the lsblk free/in-use check in phase 2 before it's touched.
+  ansible.builtin.set_fact:
+    nvme_already_vfio: "{{ (nvme_already_vfio | default([])) + ([item.item] if (item.rc == 0 and (item.stdout | basename) == 'vfio-pci') else []) }}"
+    nvme_needs_lsblk_check: "{{ (nvme_needs_lsblk_check | default([])) + ([item.item] if not (item.rc == 0 and (item.stdout | basename) == 'vfio-pci') else []) }}"
+  loop: "{{ nvme_all_drivers.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Show already-vfio-pci-bound vs. still-host-owned NVMe controllers
+  ansible.builtin.debug:
+    msg:
+      - "Already bound to vfio-pci (reused as-is): {{ nvme_already_vfio | default([]) }}"
+      - "Still owned by a host driver (will check lsblk next): {{ nvme_needs_lsblk_check | default([]) }}"
+
+# --- Phase 2: for controllers still owned by a host driver, use lsblk to
+#     make sure they are not backing the hypervisor's own storage ---
+
+- name: List block devices with transport type
+  ansible.builtin.command:
+    cmd: lsblk -J -o NAME,MODEL,SIZE,TYPE,TRAN,MOUNTPOINT
+  register: nvme_lsblk
+  changed_when: false
+
+- name: Parse lsblk output
+  ansible.builtin.set_fact:
+    nvme_lsblk_devices: "{{ (nvme_lsblk.stdout | from_json).blockdevices }}"
+
+- name: Select free vs. in-use NVMe disks
+  ansible.builtin.set_fact:
+    nvme_selection: "{{ lookup('template', 'nvme_select.j2') | from_yaml }}"
+
+- name: Normalize NVMe selection lists
+  # nvme_select.j2 renders an empty YAML list as a bare key with no items,
+  # which parses to null (None), not [] -- "default([])" alone would NOT
+  # catch that (it only replaces *undefined*, not an explicit None), so
+  # pass the second "boolean" arg to also treat None/empty as missing.
+  ansible.builtin.set_fact:
+    nvme_selection:
+      free: "{{ nvme_selection.free | default([], true) }}"
+      in_use: "{{ nvme_selection.in_use | default([], true) }}"
+
+- name: Show NVMe disk selection
+  ansible.builtin.debug:
+    msg:
+      - "Free (eligible for passthrough): {{ nvme_selection.free }}"
+      - "In use by hypervisor (skipped): {{ nvme_selection.in_use }}"
+
+- name: Resolve the controller name for each still-host-owned NVMe PCI address
+  # Only exists (one entry) while the "nvme" driver is bound; empty for
+  # anything else (no driver, a different driver), which nvme_classify.j2
+  # treats as "nothing to conflict with" -- i.e. still eligible.
+  ansible.builtin.find:
+    paths: "/sys/bus/pci/devices/{{ item }}/nvme"
+    file_type: any
+  loop: "{{ nvme_needs_lsblk_check | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  register: nvme_ctrl_lookup
+
+- name: Build PCI-address -> controller-name map
+  ansible.builtin.set_fact:
+    nvme_pci_to_ctrl: "{{ nvme_pci_to_ctrl | default({}) | combine({item.item: ((item.files[0].path | basename) if (item.files | length > 0) else '')}) }}"
+  loop: "{{ nvme_ctrl_lookup.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Classify still-host-owned NVMe PCI controllers as eligible or in-use
+  ansible.builtin.set_fact:
+    nvme_classification: "{{ lookup('template', 'nvme_classify.j2') | from_yaml }}"
+
+- name: Normalize NVMe classification lists
+  ansible.builtin.set_fact:
+    nvme_classification:
+      eligible: "{{ nvme_classification.eligible | default([], true) }}"
+      in_use: "{{ nvme_classification.in_use | default([], true) }}"
+
+- name: Show NVMe controller classification
+  ansible.builtin.debug:
+    msg:
+      - "Eligible (free, or no live block device to conflict with): {{ nvme_classification.eligible }}"
+      - "In use by hypervisor (skipped): {{ nvme_classification.in_use }}"
+
+# --- Combine both phases into the final passthrough candidate list ---
+
+- name: Combine already-bound and newly-eligible NVMe PCI addresses
+  ansible.builtin.set_fact:
+    nvme_pci_addrs: "{{ (nvme_already_vfio | default([])) + nvme_classification.eligible | unique | list }}"
+
+- name: Fail if no eligible NVMe device was found
+  ansible.builtin.fail:
+    msg: >-
+      vm_nvme=true but every NVMe-class PCI controller on this hypervisor
+      ({{ nvme_all_pci_addrs | join(', ') }}) is already in use by the host
+      ({{ nvme_classification.in_use | join(', ') }}: partitions/LVM/a
+      mountpoint, presumably backing the hypervisor itself, e.g. its root
+      volume group) -- refusing to detach them.
+  when: nvme_pci_addrs | length == 0
+
+- name: Get vendor:device ID for each NVMe PCI address
+  ansible.builtin.command:
+    cmd: "lspci -ns {{ item }}"
+  loop: "{{ nvme_pci_addrs }}"
+  loop_control:
+    label: "{{ item }}"
+  register: nvme_lspci_ns
+  changed_when: false
+
+- name: Extract vendor:device ID
+  ansible.builtin.set_fact:
+    nvme_pci_ids: "{{ nvme_lspci_ns.results | map(attribute='stdout') | map('regex_search', '[0-9a-f]{4}:[0-9a-f]{4}') | unique | list }}"
+
+- name: Build hostdev PCI address components for the domain XML
+  ansible.builtin.set_fact:
+    vm_nvme_hostdevs: "{{ vm_nvme_hostdevs | default([]) + [{'addr': item, 'domain': '0x' + item.split(':')[0], 'bus': '0x' + item.split(':')[1], 'slot': '0x' + item.split(':')[2].split('.')[0], 'function': '0x' + item.split('.')[1]}] }}"
+  loop: "{{ nvme_pci_addrs }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Show NVMe PCI passthrough device(s)
+  ansible.builtin.debug:
+    msg: "{{ vm_nvme_hostdevs }}"
+
+# --- Bind each device to vfio-pci (idempotent: skip if already bound) ---
+
+- name: Check current PCI driver for each NVMe device
+  ansible.builtin.command:
+    cmd: "readlink -f /sys/bus/pci/devices/{{ item }}/driver"
+  loop: "{{ nvme_pci_addrs }}"
+  loop_control:
+    label: "{{ item }}"
+  register: nvme_current_driver
+  changed_when: false
+  failed_when: false
+
+- name: Unbind NVMe device(s) from their current host driver
+  ansible.builtin.shell:
+    cmd: "echo {{ item.item }} > /sys/bus/pci/devices/{{ item.item }}/driver/unbind"
+  loop: "{{ nvme_current_driver.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.rc == 0
+    - (item.stdout | basename) != 'vfio-pci'
+  changed_when: true
+
+- name: Set driver_override to vfio-pci for each NVMe device
+  ansible.builtin.shell:
+    cmd: "echo vfio-pci > /sys/bus/pci/devices/{{ item.item }}/driver_override"
+  loop: "{{ nvme_current_driver.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: (item.stdout | default('') | basename) != 'vfio-pci'
+  changed_when: true
+
+- name: Bind NVMe device(s) to vfio-pci
+  ansible.builtin.shell:
+    cmd: "echo {{ item.item }} > /sys/bus/pci/drivers/vfio-pci/bind"
+  loop: "{{ nvme_current_driver.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: (item.stdout | default('') | basename) != 'vfio-pci'
+  changed_when: true
+  failed_when: false
+
+- name: Verify NVMe device(s) are now bound to vfio-pci
+  ansible.builtin.command:
+    cmd: "readlink -f /sys/bus/pci/devices/{{ item }}/driver"
+  loop: "{{ nvme_pci_addrs }}"
+  loop_control:
+    label: "{{ item }}"
+  register: nvme_final_driver
+  changed_when: false
+  failed_when: false
+
+- name: Fail if any NVMe device did not bind to vfio-pci
+  ansible.builtin.fail:
+    msg: "{{ item.item }} failed to bind to vfio-pci (driver: {{ (item.stdout | basename) if item.rc == 0 else 'none' }})."
+  loop: "{{ nvme_final_driver.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.rc != 0 or (item.stdout | basename) != 'vfio-pci'
+
+# --- Persist the binding across hypervisor reboots ---
+
+- name: Persist vfio-pci binding across reboots (modprobe.d)
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/vfio.conf
+    mode: "0644"
+    content: |
+      options vfio-pci ids={{ nvme_pci_ids | join(',') }}
+  register: nvme_vfio_conf
+
+- name: Load vfio-pci at boot (modules-load.d)
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/vfio-pci.conf
+    mode: "0644"
+    content: |
+      vfio-pci
+  register: nvme_modules_load
+
+- name: Rebuild initramfs so vfio-pci claims the NVMe device before the nvme driver at boot
+  ansible.builtin.command:
+    cmd: dracut -f
+  when: nvme_vfio_conf.changed or nvme_modules_load.changed

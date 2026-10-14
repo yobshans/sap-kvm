@@ -105,5 +105,9 @@
       - "  vCPUs:      {{ vm_vcpus }}"
       - "  Memory:     {{ vm_memory_mib }} MiB"
       - "  NUMA nodes: {{ vm_numa_nodes }}"
-      - "  Disk:       {{ vm_disk_size }}"
+      - "  OS disk:    {{ vm_disk_size }} ({{ vm_disk_active_path }})"
+      - >-
+        {{ '  Data:       NVMe PCI passthrough ' + (vm_nvme_hostdevs | map(attribute='addr') | join(', '))
+           if vm_nvme | bool else
+           '  Data disk:  ' + vm_data_disk_size | string + ' (' + vm_data_disk_path + ')' }}
       - "============================================"

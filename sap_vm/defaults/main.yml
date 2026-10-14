@@ -144,6 +144,23 @@ vm_disk_driver_type: "{{ 'raw' if guest_raw_image | bool else 'qcow2' }}"
 # vm_disk_raw_path instead once guest_raw_image converts it.
 vm_disk_active_path: "{{ vm_disk_raw_path if guest_raw_image | bool else vm_disk_path }}"
 
+# --- Secondary data disk (local qcow2) vs. NVMe PCI passthrough ---
+# The OS disk above (vm_disk_path/vm_disk_raw_path) always exists and is
+# always what the guest boots from. vm_nvme only controls a SECOND disk
+# attached as vdb, meant for SAP HANA data/log:
+#   vm_nvme: false (default) -- tasks/data_disk.yml creates a blank local
+#     qcow2 volume at vm_data_disk_path, sized by vm_data_disk_size (same
+#     libvirt pool as the OS disk).
+#   vm_nvme: true -- tasks/nvme.yml instead discovers an UNUSED NVMe device
+#     on the hypervisor (lsblk TRAN=nvme with no partitions/LVM/mountpoint),
+#     binds it to vfio-pci, and PCI-passes it straight through to the guest
+#     (<hostdev>) -- no vdb/qcow2 is created at all. Requires IOMMU enabled
+#     on the HYPERVISOR kernel (intel_iommu=on/amd_iommu=on + iommu=pt); the
+#     role fails fast with grubby instructions if it is not. See README.md.
+vm_nvme: false
+vm_data_disk_size: "{{ vm_disk_size }}"
+vm_data_disk_path: "{{ kvm_base_dir }}/{{ vm_name }}-data.qcow2"
+
 # --- Cloud-init ---
 cloud_init_dir: "{{ kvm_base_dir }}/cloud-init"
 cloud_init_iso: "{{ kvm_base_dir }}/{{ vm_name }}-cidata.iso"

@@ -32,6 +32,16 @@
   when: guest_raw_image | bool
   tags: [raw_convert]
 
+- name: Include secondary data disk preparation (local qcow2, when vm_nvme is false)
+  ansible.builtin.include_tasks: data_disk.yml
+  when: not (vm_nvme | bool)
+  tags: [disk, data_disk]
+
+- name: Include NVMe PCI passthrough preparation (when vm_nvme is true)
+  ansible.builtin.include_tasks: nvme.yml
+  when: vm_nvme | bool
+  tags: [disk, nvme]
+
 - name: Include cloud-init setup
   ansible.builtin.include_tasks: cloud_init.yml
   tags: [cloud_init]

@@ -111,6 +111,112 @@ re-copying a fresh qcow2 on later runs (it checks whether the raw disk
 already exists first). `-e destroy_existing_vm=true` removes both the
 `.qcow2` and `.raw` files regardless of which one is currently in use.
 
+#### Secondary data disk vs. NVMe PCI passthrough (`vm_nvme`)
+
+The OS disk above (`vm_disk_path`/`vm_disk_raw_path`, attached as `vda`)
+always exists — it's what the guest boots from. `vm_nvme` only controls a
+**second** disk, attached as `vdb`, meant for SAP HANA data/log:
+
+| `vm_nvme` | Task file | Guest sees |
+|---|---|---|
+| `false` (default) | `tasks/data_disk.yml` | `vdb` backed by a blank local qcow2 file, `vm_data_disk_path` (default `{{ kvm_base_dir }}/{{ vm_name }}-data.qcow2`), sized `vm_data_disk_size` (defaults to `vm_disk_size`) |
+| `true` | `tasks/nvme.yml` | A real NVMe device (`/dev/nvmeXn1` inside the guest), PCI-passed-through with `<hostdev>` — no file-backed disk at all |
+
+**`vm_nvme=true` discovery/bind sequence** (idempotent — safe to re-run):
+
+1. Fail fast if the hypervisor kernel has no `/sys/kernel/iommu_groups`
+   (IOMMU not enabled):
+   ```bash
+   grubby --update-kernel=ALL --args="intel_iommu=on iommu=pt"   # Intel
+   grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
+   reboot
+   ```
+2. Discovery is **PCI-first, not `lsblk`-first**: `lspci -D -d ::0108`
+   enumerates every NVMe-class PCI controller regardless of which driver
+   currently owns it. This matters because `lsblk`/`/sys/class/nvme` only
+   show controllers currently bound to the host's `nvme` driver — once a
+   controller is already bound to `vfio-pci` (from a previous run of this
+   role, or because it was bound by hand ahead of time following the
+   manual procedure below), it has no `/dev/nvmeXn1` node at all and is
+   invisible to `lsblk`. Relying on `lsblk` alone would then wrongly report
+   "no NVMe device found" on every run *after* the first successful bind —
+   `lspci` sees the controller either way, so it's reused as-is without
+   re-checking anything.
+3. For controllers **still owned by the `nvme` driver** (not yet bound),
+   `lsblk -o NAME,MODEL,SIZE,TYPE,TRAN,MOUNTPOINT` finds every `TYPE=disk`,
+   `TRAN=nvme` device, then splits them into:
+   - **free** — no mountpoint and no `children` (no partitions, no LVM) —
+     eligible for passthrough. For example, on a host where the OS lives
+     entirely on `sda` and the NVMe has never been touched:
+     ```
+     NAME                               MODEL                                  SIZE TYPE TRAN   MOUNTPOINT
+     sda                                PERC H740P Mini                      446.6G disk
+     ├─sda1                                                                      1M part
+     ├─sda2                                                                    512M part        /boot
+     └─sda3                                                                  446.1G part
+       ├─vg_f20--h07--000--r640-lv_root                                      438.1G lvm         /
+       └─vg_f20--h07--000--r640-lv_swap                                          8G lvm         [SWAP]
+     sdb                                PERC H740P Mini                        1.7T disk
+     sdc                                PERC H740P Mini                        1.7T disk
+     nvme0n1                            Dell Express Flash PM1725b 3.2TB SFF   2.9T disk nvme
+     ```
+     `nvme0n1` has no `MOUNTPOINT` and no child rows at all → **free**.
+   - **in_use** — already backing the hypervisor itself (e.g. a root/swap
+     volume group laid directly on the whole NVMe namespace with no
+     partition table, if the OS install picked the NVMe instead of a SAS
+     disk for `sda`'s role above). These are never touched; the role fails
+     if that's *all* that was found, rather than silently detaching storage
+     the hypervisor needs.
+4. The final passthrough candidate list is **already-vfio-pci-bound
+   controllers (step 2) + lsblk-eligible controllers (step 3)**. Fails if
+   that combined list is empty (every NVMe controller found is either
+   backing the hypervisor or there's no NVMe hardware at all).
+5. Gets each candidate's vendor:device ID via `lspci -ns` (works regardless
+   of current driver), then `modprobe vfio-pci` and — unless a controller
+   is already on `vfio-pci` from step 2 — unbinds it from its current
+   driver and binds it to `vfio-pci`:
+   ```bash
+   echo "$NVME_PCI" > /sys/bus/pci/devices/$NVME_PCI/driver/unbind
+   echo "vfio-pci"  > /sys/bus/pci/devices/$NVME_PCI/driver_override
+   echo "$NVME_PCI" > /sys/bus/pci/drivers/vfio-pci/bind
+   ```
+6. Persists the binding across a hypervisor reboot:
+   `/etc/modprobe.d/vfio.conf` (`options vfio-pci ids=<vendor:device,...>`),
+   `/etc/modules-load.d/vfio-pci.conf` (`vfio-pci`), then `dracut -f` (only
+   when either file actually changed).
+7. `vm-domain.xml.j2` adds one `<hostdev mode='subsystem' type='pci'
+   managed='yes'>` per candidate PCI address; `managed='yes'` lets libvirt
+   itself detach/reattach the device from `vfio-pci` around VM start/stop,
+   so no extra "give it back" step is needed between runs.
+
+Once attached, the guest sees the raw namespace and can partition/format it
+directly, e.g.:
+
+```bash
+lsblk | grep nvme
+parted /dev/nvme0n1 mklabel gpt
+parted /dev/nvme0n1 mkpart hana-data xfs 0% 80%
+parted /dev/nvme0n1 mkpart hana-log  xfs 80% 100%
+mkfs.xfs /dev/nvme0n1p1 && mkfs.xfs /dev/nvme0n1p2
+mkdir -p /hana/data /hana/log
+mount /dev/nvme0n1p1 /hana/data
+mount /dev/nvme0n1p2 /hana/log
+```
+
+Destroying the VM (`destroy_existing_vm=true`) removes the local data
+qcow2 file if one was used, but **does not** unbind a passed-through NVMe
+device from `vfio-pci` — it's physical hardware, not a file under
+`kvm_base_dir`, and leaving it bound means recreating the VM right after
+reuses it without re-binding. To hand it back to the hypervisor's `nvme`
+driver manually:
+
+```bash
+echo "$NVME_PCI" > /sys/bus/pci/devices/$NVME_PCI/driver/unbind
+echo "nvme"       > /sys/bus/pci/devices/$NVME_PCI/driver_override
+echo "$NVME_PCI" > /sys/bus/pci/drivers/nvme/bind
+rm -f /etc/modprobe.d/vfio.conf /etc/modules-load.d/vfio-pci.conf && dracut -f
+```
+
 ### Clock and CPU flags
 
 TSC frequency is discovered from the host (`tsc_freq_khz` or kernel
@@ -397,6 +503,18 @@ ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
   -e vm_vcpus=20
 
+# Attach an unused hypervisor NVMe device to the guest via PCI passthrough
+# (vdb) instead of a local qcow2 data disk; requires IOMMU already enabled
+# on the hypervisor kernel (see "NVMe PCI passthrough" above)
+ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
+  -e vm_root_password='...' \
+  -e vm_nvme=true
+
+# Explicit size for the local qcow2 data disk (vm_nvme=false, the default)
+ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
+  -e vm_root_password='...' \
+  -e vm_data_disk_size=500G
+
 # Only preflight + hugepages (topology discovery always runs)
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
@@ -417,6 +535,9 @@ Useful extra-vars:
 | `guest_update_packages` | `true` | Repoint guest repos at `compose_url` and `dnf update` after boot |
 | `guest_raw_image` | `false` | Run the guest off `vm_disk_raw_path` (raw) instead of `vm_disk_path` (qcow2) |
 | `guest_raw_image_remove_qcow2` | `false` | Delete the pre-conversion qcow2 after a successful raw conversion |
+| `vm_nvme` | `false` | Attach the secondary data disk (`vdb`) as an NVMe PCI passthrough device instead of a local qcow2 file |
+| `vm_data_disk_size` | `vm_disk_size` | Size of the local qcow2 data disk when `vm_nvme=false` |
+| `vm_data_disk_path` | `{kvm_base_dir}/{vm_name}-data.qcow2` | Path of the local qcow2 data disk when `vm_nvme=false` |
 | `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |
 | `destroy_existing_vm` | `false` | Tear down VM, disk(s), ISO, `/etc/hosts`, known_hosts |
 | `vm_domain` | `lab.eng.tlv2.redhat.com` | FQDN suffix for `/etc/hosts` |
@@ -424,8 +545,8 @@ Useful extra-vars:
 | `vm_memory_prefault` | `true` | Add `<allocation mode='immediate'/>` to pre-fault all guest memory at boot |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `hugepages`, `disk`,
-`raw_convert`, `cloud_init`, `vm_define`, `post_boot`, `repo_update`,
-`verify`.
+`raw_convert`, `data_disk`, `nvme`, `cloud_init`, `vm_define`, `post_boot`,
+`repo_update`, `verify`.
 
 After a successful run, from the hypervisor:
 
