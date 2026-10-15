@@ -28,8 +28,20 @@ to override; pinning still comes from the live host topology.
 | vCPUs | `sockets × cores × threads` |
 
 The first physical core of each NUMA node is left for QEMU (`emulatorpin`) and
-the IO thread (`iothreadpin`). Remaining cores are pinned 1:1: each guest
-thread pair of a core shares the host SMT sibling cpuset.
+the IO thread (`iothreadpin`). Remaining cores are pinned **strictly 1:1**:
+each guest vCPU gets exactly **one** host SMT thread, e.g.
+
+```xml
+<vcpupin vcpu='0' cpuset='2'/>
+<vcpupin vcpu='1' cpuset='42'/>
+```
+
+not the whole sibling pair shared across both vCPUs of a core
+(`cpuset='2,42'` for both) — letting the host scheduler bounce a vCPU
+between its own two SMT siblings hurts cache locality and adds jitter for
+CPU-pinned benchmarks (SAP PBO/HCMT). This is purely a libvirt
+`<cputune>` change (`templates/hana_topology.j2`); it doesn't change vCPU
+*count*.
 
 Example: 2 sockets, 20 cores/socket, SMT-2 → reserve 1 core/node →
 `2 × 19 × 2 = 76` vCPUs, 2 NUMA cells.
@@ -227,6 +239,82 @@ frequency is applied and start is retried. Override with
 
 The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
 `x2apic`. Memory ballooning is disabled.
+
+## Hypervisor host tuning for CPU-pinned benchmarking (SAP PBO/HCMT)
+
+> ⚠️ **This section changes the HYPERVISOR, not just the guest, and can
+> reboot it.** `tasks/host_tuning.yml` always runs (there is no opt-out
+> flag) and, when the running kernel's cmdline doesn't already carry the
+> values the current topology needs, it runs `grubby` and **reboots the
+> hypervisor** — taking down **every other VM currently running on that
+> host**, not just this one. It is idempotent (a re-run with an
+> already-matching cmdline is a no-op, and it only reboots again if the
+> topology changes enough to need different values — e.g. a different
+> `vm_vcpus` override), but **do not run this role against a shared or
+> production hypervisor without accounting for that.**
+
+### CPU isolation + static hugepages (`tasks/host_tuning.yml`)
+
+After topology discovery (`vm_cpu_pins`, `hugepages_per_node`,
+`hugepage_nodes`) but before `hugepages.yml`'s runtime reservation,
+`templates/host_tuning.j2` computes the desired hypervisor kernel cmdline:
+
+- `isolcpus=<range>` / `nohz_full=<range>` / `rcu_nocbs=<range>` — exactly
+  the host CPUs `vm_cpu_pins` dedicates to guest vCPUs (the 1:1 pins
+  above), collapsed into ranges. The reserved emulator/iothread core is
+  deliberately **left out** of this range — it needs to keep receiving
+  normal host scheduling/interrupts/timers, so it's never isolated.
+- `default_hugepagesz=1G hugepagesz=1G hugepages=<N>` — a static,
+  boot-time 1 GiB hugepage reservation sized from
+  `hugepages_per_node × hugepage_nodes` (the same total `hugepages.yml`
+  already computes/verifies at runtime), more reliable than runtime
+  reservation on a host whose memory is already fragmented.
+
+Example (2 sockets × 40 cores × SMT-2, 1 reserved core/node at CPU 0/40):
+
+```bash
+grubby --update-kernel=ALL \
+  --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz" \
+  --args="default_hugepagesz=1G hugepagesz=1G hugepages=280 isolcpus=1-39,41-79 nohz_full=1-39,41-79 rcu_nocbs=1-39,41-79"
+```
+
+This is compared against `ansible_cmdline` (the currently **booted**
+kernel's `/proc/cmdline`, not just what's configured for the next boot):
+if everything already matches, nothing happens. Otherwise, `grubby` runs
+(`--remove-args` first so repeated topology changes replace the old
+values instead of accumulating duplicates), the hypervisor **reboots**
+(`ansible.builtin.reboot`, waits for it to come back), facts are
+re-gathered, and the cmdline is checked again — failing loudly if it still
+doesn't match (wrong default boot entry, multiple installed kernels,
+etc.) rather than silently continuing on a half-tuned host.
+
+**Does not set `mitigations=off`** — disabling CPU vulnerability
+mitigations (Spectre/MDS/L1TF/etc.) for maximum benchmark throughput is a
+separate, security-relevant decision this role does not make for you. Add
+it yourself with your own `grubby --update-kernel=ALL --args="mitigations=off"`
++ reboot before running this role if you want it; `host_tuning.yml`'s
+`--remove-args`/`--args` only ever touch the isolcpus/hugepages keys above
+and won't disturb it.
+
+### KVM kernel module tuning (`tasks/kvm_tuning.yml`)
+
+Runs right after host tuning (so it applies to the freshly (re)loaded
+module if a reboot just happened). These are global `kvm`/`kvm_intel`
+kernel module parameters — like host tuning above, they affect **every**
+VM on this hypervisor, not just this one:
+
+| Parameter | Default | Why |
+|---|---|---|
+| `/sys/module/kvm/parameters/halt_poll_ns` | `vm_kvm_halt_poll_ns` (500000) | vCPU busy-waits longer before halting, reducing wakeup latency |
+| `/sys/module/kvm/parameters/lapic_timer_advance_ns` | `vm_kvm_lapic_timer_advance_ns` (1000) | Compensates for VMEXIT latency on lapic timer delivery |
+| `/sys/module/kvm_intel/parameters/ple_gap` | `vm_kvm_ple_gap` (0) | Disables Pause-Loop Exiting — benchmark workloads with spinning locks (e.g. SAP PBO) cause unnecessary VMEXITs under PLE |
+
+Applied live via sysfs (effective immediately, no reboot) and persisted to
+`/etc/modprobe.d/kvm-tuning.conf` so the same values come back on the next
+module reload/reboot. `ple_gap` is Intel-specific (Pause-Loop Exiting); on
+an AMD host (no `kvm_intel` module) that one tunable is skipped — not
+failed — with a note in the output. AMD's equivalent Pause Filter tuning
+is not currently handled by this role.
 
 ## RHEL compose (image, install repos, and update repos)
 
@@ -543,10 +631,14 @@ Useful extra-vars:
 | `vm_domain` | `lab.eng.tlv2.redhat.com` | FQDN suffix for `/etc/hosts` |
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
 | `vm_memory_prefault` | `true` | Add `<allocation mode='immediate'/>` to pre-fault all guest memory at boot |
+| `vm_host_reboot_timeout` | `600` | Seconds to wait for the hypervisor to come back after `host_tuning.yml` reboots it |
+| `vm_kvm_halt_poll_ns` | `500000` | `kvm` module `halt_poll_ns` (host-wide) |
+| `vm_kvm_lapic_timer_advance_ns` | `1000` | `kvm` module `lapic_timer_advance_ns` (host-wide) |
+| `vm_kvm_ple_gap` | `0` | `kvm_intel` module `ple_gap` (host-wide; skipped on AMD) |
 
-Tags: `preflight`, `cleanup`, `topology` (always), `hugepages`, `disk`,
-`raw_convert`, `data_disk`, `nvme`, `cloud_init`, `vm_define`, `post_boot`,
-`repo_update`, `verify`.
+Tags: `preflight`, `cleanup`, `topology` (always), `host_tuning`,
+`kvm_tuning`, `hugepages`, `disk`, `raw_convert`, `data_disk`, `nvme`,
+`cloud_init`, `vm_define`, `post_boot`, `repo_update`, `verify`.
 
 After a successful run, from the hypervisor:
 

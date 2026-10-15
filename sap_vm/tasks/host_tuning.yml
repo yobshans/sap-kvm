@@ -1,0 +1,71 @@
+---
+# ============================================================================
+# Host tuning — CPU isolation + static 1 GiB hugepages for CPU-pinned
+# benchmarking (SAP PBO/HCMT-style workloads)
+#
+# Reboots the HYPERVISOR (not the guest) when the running kernel's cmdline
+# doesn't already carry the isolcpus/nohz_full/rcu_nocbs/hugepages values
+# this VM's topology needs -- these can only be set at boot. Any OTHER VM
+# currently running on this hypervisor goes down with it. Idempotent: if
+# the current /proc/cmdline (ansible_cmdline) already matches, this is a
+# no-op -- re-running the playbook on an already-tuned host never reboots
+# it again, and only reboots again if the topology changes enough to need
+# a different isolcpus/hugepages value (e.g. a different vm_vcpus override).
+#
+# isolcpus/nohz_full/rcu_nocbs cover exactly the host CPUs vm_cpu_pins
+# dedicates to guest vCPUs (templates/host_tuning.j2) -- NOT the reserved
+# emulator/iothread core, which is deliberately left off so it keeps
+# getting normal host scheduling/interrupts/timers.
+#
+# Does NOT set mitigations=off -- CPU vulnerability mitigations are a
+# separate, security-relevant decision this role does not make for you.
+# ============================================================================
+
+- name: Compute desired vs. current hypervisor kernel cmdline for CPU isolation
+  ansible.builtin.set_fact:
+    host_tuning: "{{ lookup('template', 'host_tuning.j2') | from_yaml }}"
+
+- name: Show hypervisor kernel cmdline comparison
+  ansible.builtin.debug:
+    msg:
+      - "Desired: {{ host_tuning.desired }}"
+      - "Current: {{ host_tuning.current }}"
+      - "Already matches (no reboot needed): {{ host_tuning.matches }}"
+
+- name: Apply CPU isolation + static hugepages and reboot the hypervisor
+  when: not (host_tuning.matches | bool)
+  block:
+    - name: Update hypervisor kernel cmdline (grubby, all installed kernels)
+      ansible.builtin.command:
+        cmd: >-
+          grubby --update-kernel=ALL
+          --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz"
+          --args="{{ host_tuning.grub_args }}"
+      changed_when: true
+
+    - name: Reboot the hypervisor to apply CPU isolation + static hugepages
+      ansible.builtin.reboot:
+        msg: "Rebooting for sap_vm host tuning (isolcpus/nohz_full/rcu_nocbs/hugepages)"
+        reboot_timeout: "{{ vm_host_reboot_timeout | int }}"
+
+    - name: Re-gather hypervisor facts after reboot
+      ansible.builtin.setup:
+
+    - name: Re-check hypervisor kernel cmdline after reboot
+      ansible.builtin.set_fact:
+        host_tuning: "{{ lookup('template', 'host_tuning.j2') | from_yaml }}"
+
+    - name: Fail if the hypervisor kernel cmdline still doesn't match after reboot
+      ansible.builtin.fail:
+        msg: >-
+          grubby + reboot did not produce the expected kernel cmdline.
+          Desired: {{ host_tuning.desired }}
+          Current (post-reboot): {{ host_tuning.current }}
+          Check `cat /proc/cmdline`, `grubby --info=ALL`, and that the
+          hypervisor actually booted the kernel grubby updated (multiple
+          installed kernels / non-default boot entry?) on the hypervisor.
+      when: not (host_tuning.matches | bool)
+
+    - name: Show hypervisor kernel cmdline after reboot
+      ansible.builtin.debug:
+        msg: "Hypervisor now booted with: {{ host_tuning.current }}"
