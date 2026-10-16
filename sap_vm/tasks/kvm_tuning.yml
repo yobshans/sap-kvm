@@ -23,12 +23,12 @@
     unsafe_writes: true
   changed_when: true
 
-- name: Advance the lapic timer to compensate for VMEXIT latency on timer delivery
-  ansible.builtin.copy:
-    dest: /sys/module/kvm/parameters/lapic_timer_advance_ns
-    content: "{{ vm_kvm_lapic_timer_advance_ns }}"
-    unsafe_writes: true
-  changed_when: true
+#- name: Advance the lapic timer to compensate for VMEXIT latency on timer delivery
+ # ansible.builtin.copy:
+ #   dest: /sys/module/kvm/parameters/lapic_timer_advance_ns
+ #   content: "{{ vm_kvm_lapic_timer_advance_ns }}"
+ #   unsafe_writes: true
+ # changed_when: true
 
 - name: Check whether kvm_intel (Pause-Loop Exiting) is loaded
   ansible.builtin.stat:
