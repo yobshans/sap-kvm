@@ -19,6 +19,14 @@
       tags: [always, topology]
   tags: [always, topology]
 
+- name: Include hypervisor host tuning (CPU isolation + static hugepages; may reboot the hypervisor)
+  ansible.builtin.include_tasks: host_tuning.yml
+  tags: [host_tuning]
+
+- name: Include KVM kernel module tuning (halt_poll_ns / lapic_timer_advance_ns / ple_gap)
+  ansible.builtin.include_tasks: kvm_tuning.yml
+  tags: [kvm_tuning]
+
 - name: Include hugepages configuration
   ansible.builtin.include_tasks: hugepages.yml
   tags: [hugepages]

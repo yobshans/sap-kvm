@@ -1,0 +1,51 @@
+{#- Compute the HYPERVISOR kernel cmdline args needed for CPU-pinned
+    benchmarking (SAP PBO/HCMT-style workloads): static 1 GiB hugepages
+    sized from the already-discovered topology, plus isolcpus/nohz_full/
+    rcu_nocbs covering exactly the host CPUs vm_cpu_pins dedicates to guest
+    vCPUs (NOT the reserved emulator/iothread core -- that one is left
+    alone on purpose so it keeps receiving normal host scheduling/
+    interrupts). Compares against the CURRENTLY BOOTED kernel's cmdline
+    (ansible_cmdline, from gather_facts) so tasks/host_tuning.yml only
+    grubby+reboots when something actually needs to change. -#}
+{% macro format_cpuset(cpu_list) -%}
+{% set ordered = cpu_list | unique | sort -%}
+{% set ns = namespace(parts=[], start=none, prev=none) -%}
+{% for cpu in ordered -%}
+{% if ns.start is none -%}
+{% set ns.start = cpu -%}
+{% set ns.prev = cpu -%}
+{% elif cpu == ns.prev + 1 -%}
+{% set ns.prev = cpu -%}
+{% else -%}
+{% set ns.parts = ns.parts + ([ns.start | string] if ns.start == ns.prev else [ns.start | string ~ '-' ~ ns.prev | string]) -%}
+{% set ns.start = cpu -%}
+{% set ns.prev = cpu -%}
+{% endif -%}
+{% endfor -%}
+{% if ns.start is not none -%}
+{% set ns.parts = ns.parts + ([ns.start | string] if ns.start == ns.prev else [ns.start | string ~ '-' ~ ns.prev | string]) -%}
+{% endif -%}
+{{ ns.parts | join(',') }}
+{%- endmacro %}
+{% set isolated_cpus = vm_cpu_pins | map(attribute='cpuset') | map('int') | list %}
+{% set isol_range = format_cpuset(isolated_cpus) %}
+{% set hugepages_total = (hugepages_per_node | int) * (hugepage_nodes | length) %}
+{% set current = ansible_cmdline | default({}) %}
+{% set hugepagesz_matches = (current.default_hugepagesz | default('')) == '1G' and (current.hugepagesz | default('')) == '1G' and ((current.hugepages | default('')) | string) == (hugepages_total | string) %}
+{% set isolcpus_matches = (current.isolcpus | default('')) == isol_range and (current.nohz_full | default('')) == isol_range and (current.rcu_nocbs | default('')) == isol_range %}
+desired:
+  default_hugepagesz: "1G"
+  hugepagesz: "1G"
+  hugepages: "{{ hugepages_total }}"
+  isolcpus: {{ isol_range | to_json }}
+  nohz_full: {{ isol_range | to_json }}
+  rcu_nocbs: {{ isol_range | to_json }}
+current:
+  default_hugepagesz: {{ (current.default_hugepagesz | default('')) | to_json }}
+  hugepagesz: {{ (current.hugepagesz | default('')) | to_json }}
+  hugepages: {{ (current.hugepages | default('')) | to_json }}
+  isolcpus: {{ (current.isolcpus | default('')) | to_json }}
+  nohz_full: {{ (current.nohz_full | default('')) | to_json }}
+  rcu_nocbs: {{ (current.rcu_nocbs | default('')) | to_json }}
+matches: {{ (hugepagesz_matches and isolcpus_matches) | to_json }}
+grub_args: {{ ("default_hugepagesz=1G hugepagesz=1G hugepages=" ~ hugepages_total ~ " isolcpus=" ~ isol_range ~ " nohz_full=" ~ isol_range ~ " rcu_nocbs=" ~ isol_range) | to_json }}

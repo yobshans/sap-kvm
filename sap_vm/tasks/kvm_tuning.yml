@@ -1,0 +1,62 @@
+---
+# ============================================================================
+# KVM module tuning — reduce latency for CPU-pinned, lock-heavy (SAP PBO/
+# HCMT-style) benchmark workloads. These are global `kvm`/`kvm_intel` kernel
+# module parameters -- they affect every VM on this hypervisor, not just
+# this one.
+#
+# Applied live via sysfs (takes effect immediately on the currently loaded
+# module, including right after tasks/host_tuning.yml's reboot) AND
+# persisted via /etc/modprobe.d so the same values come back on the next
+# module reload/reboot too.
+# ============================================================================
+
+- name: Ensure the kvm module is loaded
+  community.general.modprobe:
+    name: kvm
+    state: present
+
+- name: Increase KVM halt-poll window (vCPU busy-waits longer before halting, reduces wakeup latency)
+  ansible.builtin.copy:
+    dest: /sys/module/kvm/parameters/halt_poll_ns
+    content: "{{ vm_kvm_halt_poll_ns }}"
+    unsafe_writes: true
+  changed_when: true
+
+#- name: Advance the lapic timer to compensate for VMEXIT latency on timer delivery
+ # ansible.builtin.copy:
+ #   dest: /sys/module/kvm/parameters/lapic_timer_advance_ns
+ #   content: "{{ vm_kvm_lapic_timer_advance_ns }}"
+ #   unsafe_writes: true
+ # changed_when: true
+
+- name: Check whether kvm_intel (Pause-Loop Exiting) is loaded
+  ansible.builtin.stat:
+    path: /sys/module/kvm_intel/parameters/ple_gap
+  register: kvm_intel_ple_gap
+
+# - name: Disable Pause-Loop Exiting on Intel hosts (spinning locks in benchmark workloads cause unnecessary VMEXITs under PLE)
+#   ansible.builtin.copy:
+#     dest: /sys/module/kvm_intel/parameters/ple_gap
+#     content: "{{ vm_kvm_ple_gap }}"
+#     unsafe_writes: true
+#   changed_when: true
+#   when: kvm_intel_ple_gap.stat.exists
+
+# - name: Show whether Pause-Loop Exiting tuning was applied
+#   ansible.builtin.debug:
+#     msg: >-
+#       {{ ('kvm_intel ple_gap set to ' ~ (vm_kvm_ple_gap | string))
+#          if kvm_intel_ple_gap.stat.exists
+#          else 'kvm_intel is not loaded (AMD host?) -- ple_gap tuning skipped. AMD Pause Filter tuning is not currently handled by this role.' }}
+
+- name: Build persisted KVM module tuning file content
+  ansible.builtin.set_fact:
+    kvm_tuning_conf_content: >-
+      options kvm halt_poll_ns={{ vm_kvm_halt_poll_ns }} lapic_timer_advance_ns={{ vm_kvm_lapic_timer_advance_ns }}{{ '\n' }}{{ ('options kvm_intel ple_gap=' ~ vm_kvm_ple_gap) if kvm_intel_ple_gap.stat.exists else '' }}
+
+- name: Persist KVM module tuning across reboots/module reloads
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/kvm-tuning.conf
+    mode: "0644"
+    content: "{{ kvm_tuning_conf_content | trim }}\n"
