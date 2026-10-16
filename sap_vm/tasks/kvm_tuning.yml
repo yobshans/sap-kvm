@@ -35,20 +35,20 @@
     path: /sys/module/kvm_intel/parameters/ple_gap
   register: kvm_intel_ple_gap
 
-- name: Disable Pause-Loop Exiting on Intel hosts (spinning locks in benchmark workloads cause unnecessary VMEXITs under PLE)
-  ansible.builtin.copy:
-    dest: /sys/module/kvm_intel/parameters/ple_gap
-    content: "{{ vm_kvm_ple_gap }}"
-    unsafe_writes: true
-  changed_when: true
-  when: kvm_intel_ple_gap.stat.exists
+# - name: Disable Pause-Loop Exiting on Intel hosts (spinning locks in benchmark workloads cause unnecessary VMEXITs under PLE)
+#   ansible.builtin.copy:
+#     dest: /sys/module/kvm_intel/parameters/ple_gap
+#     content: "{{ vm_kvm_ple_gap }}"
+#     unsafe_writes: true
+#   changed_when: true
+#   when: kvm_intel_ple_gap.stat.exists
 
-- name: Show whether Pause-Loop Exiting tuning was applied
-  ansible.builtin.debug:
-    msg: >-
-      {{ ('kvm_intel ple_gap set to ' ~ (vm_kvm_ple_gap | string))
-         if kvm_intel_ple_gap.stat.exists
-         else 'kvm_intel is not loaded (AMD host?) -- ple_gap tuning skipped. AMD Pause Filter tuning is not currently handled by this role.' }}
+# - name: Show whether Pause-Loop Exiting tuning was applied
+#   ansible.builtin.debug:
+#     msg: >-
+#       {{ ('kvm_intel ple_gap set to ' ~ (vm_kvm_ple_gap | string))
+#          if kvm_intel_ple_gap.stat.exists
+#          else 'kvm_intel is not loaded (AMD host?) -- ple_gap tuning skipped. AMD Pause Filter tuning is not currently handled by this role.' }}
 
 - name: Build persisted KVM module tuning file content
   ansible.builtin.set_fact:
