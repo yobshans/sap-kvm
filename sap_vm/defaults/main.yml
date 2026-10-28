@@ -113,7 +113,7 @@ guest_image_compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RH
 # guest_image_compose_url; override independently when you want the guest to
 # track a newer compose than the one it was installed from.
 # Override with -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2'
-compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20261012.d.0/compose"
+compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20261001.1/compose"
 
 # Release used for guest yum repo names/descriptions. Kept independent of
 # compose_url since not every lab's URL encodes the release the same way.
