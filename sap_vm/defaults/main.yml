@@ -63,14 +63,14 @@ hugepage_nodes: auto
 # tasks/host_tuning.yml always runs (no opt-out flag) and compares the
 # running hypervisor kernel's cmdline against isolcpus/nohz_full/rcu_nocbs
 # (exactly the host CPUs vm_cpu_pins dedicates to guest vCPUs -- see
-# templates/host_tuning.j2) and a static default_hugepagesz=1G hugepagesz=1G
-# hugepages=N reservation sized from hugepages_per_node x hugepage_nodes.
+# templates/host_tuning.j2), a static default_hugepagesz=1G hugepagesz=1G
+# hugepages=N reservation sized from hugepages_per_node x hugepage_nodes,
+# and mitigations=off.
 # If they already match, it's a no-op. If not, it runs grubby and REBOOTS
 # THE HYPERVISOR (ansible.builtin.reboot, waits for it to come back) --
 # this takes down every OTHER VM on that hypervisor too, not just this
-# one. Does NOT set mitigations=off; that's a separate decision this role
-# does not make for you. See README.md before running this against a
-# shared/production hypervisor.
+# one. It sets mitigations=off host-wide, which is security-relevant.
+# See README.md before running this against a shared/production hypervisor.
 vm_host_reboot_timeout: 600
 
 # --- KVM kernel module tuning for CPU-pinned, lock-heavy benchmark
@@ -78,7 +78,7 @@ vm_host_reboot_timeout: 600
 #     kvm/kvm_intel module parameters -- they affect every VM on this
 #     hypervisor, not just this one. ple_gap is skipped (not failed) on
 #     AMD hosts where kvm_intel isn't loaded. ---
-vm_kvm_halt_poll_ns: 500000          # vCPU busy-waits longer before halting
+vm_kvm_halt_poll_ns: 2000000         # vCPU busy-waits longer before halting
 vm_kvm_lapic_timer_advance_ns: 1000  # compensates for VMEXIT latency on lapic timer delivery
 vm_kvm_ple_gap: 0                    # disable Pause-Loop Exiting (spinning locks cause unnecessary VMEXITs under PLE)
 

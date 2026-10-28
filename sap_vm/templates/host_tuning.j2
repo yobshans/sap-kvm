@@ -33,10 +33,12 @@
 {% set current = ansible_cmdline | default({}) %}
 {% set hugepagesz_matches = (current.default_hugepagesz | default('')) == '1G' and (current.hugepagesz | default('')) == '1G' and ((current.hugepages | default('')) | string) == (hugepages_total | string) %}
 {% set isolcpus_matches = (current.isolcpus | default('')) == isol_range and (current.nohz_full | default('')) == isol_range and (current.rcu_nocbs | default('')) == isol_range %}
+{% set mitigations_matches = (current.mitigations | default('')) == 'off' %}
 desired:
   default_hugepagesz: "1G"
   hugepagesz: "1G"
   hugepages: "{{ hugepages_total }}"
+  mitigations: "off"
   isolcpus: {{ isol_range | to_json }}
   nohz_full: {{ isol_range | to_json }}
   rcu_nocbs: {{ isol_range | to_json }}
@@ -44,8 +46,9 @@ current:
   default_hugepagesz: {{ (current.default_hugepagesz | default('')) | to_json }}
   hugepagesz: {{ (current.hugepagesz | default('')) | to_json }}
   hugepages: {{ (current.hugepages | default('')) | to_json }}
+  mitigations: {{ (current.mitigations | default('')) | to_json }}
   isolcpus: {{ (current.isolcpus | default('')) | to_json }}
   nohz_full: {{ (current.nohz_full | default('')) | to_json }}
   rcu_nocbs: {{ (current.rcu_nocbs | default('')) | to_json }}
-matches: {{ (hugepagesz_matches and isolcpus_matches) | to_json }}
-grub_args: {{ ("default_hugepagesz=1G hugepagesz=1G hugepages=" ~ hugepages_total ~ " isolcpus=" ~ isol_range ~ " nohz_full=" ~ isol_range ~ " rcu_nocbs=" ~ isol_range) | to_json }}
+matches: {{ (hugepagesz_matches and isolcpus_matches and mitigations_matches) | to_json }}
+grub_args: {{ ("default_hugepagesz=1G hugepagesz=1G hugepages=" ~ hugepages_total ~ " isolcpus=" ~ isol_range ~ " nohz_full=" ~ isol_range ~ " rcu_nocbs=" ~ isol_range ~ " mitigations=off") | to_json }}

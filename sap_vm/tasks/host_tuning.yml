@@ -5,7 +5,8 @@
 #
 # Reboots the HYPERVISOR (not the guest) when the running kernel's cmdline
 # doesn't already carry the isolcpus/nohz_full/rcu_nocbs/hugepages values
-# this VM's topology needs -- these can only be set at boot. Any OTHER VM
+# and mitigations=off needed for this benchmark setup -- these can only be
+# set at boot. Any OTHER VM
 # currently running on this hypervisor goes down with it. Idempotent: if
 # the current /proc/cmdline (ansible_cmdline) already matches, this is a
 # no-op -- re-running the playbook on an already-tuned host never reboots
@@ -17,8 +18,8 @@
 # emulator/iothread core, which is deliberately left off so it keeps
 # getting normal host scheduling/interrupts/timers.
 #
-# Does NOT set mitigations=off -- CPU vulnerability mitigations are a
-# separate, security-relevant decision this role does not make for you.
+# Sets mitigations=off to disable CPU vulnerability mitigations for
+# benchmark throughput. This is host-wide and security-relevant.
 # ============================================================================
 
 - name: Compute desired vs. current hypervisor kernel cmdline for CPU isolation
@@ -32,20 +33,20 @@
       - "Current: {{ host_tuning.current }}"
       - "Already matches (no reboot needed): {{ host_tuning.matches }}"
 
-- name: Apply CPU isolation + static hugepages and reboot the hypervisor
+- name: Apply CPU isolation, static hugepages, and mitigations=off; reboot the hypervisor
   when: not (host_tuning.matches | bool)
   block:
     - name: Update hypervisor kernel cmdline (grubby, all installed kernels)
       ansible.builtin.command:
         cmd: >-
           grubby --update-kernel=ALL
-          --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz"
+          --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz mitigations"
           --args="{{ host_tuning.grub_args }}"
       changed_when: true
 
-    - name: Reboot the hypervisor to apply CPU isolation + static hugepages
+    - name: Reboot the hypervisor to apply CPU isolation + static hugepages + mitigations=off
       ansible.builtin.reboot:
-        msg: "Rebooting for sap_vm host tuning (isolcpus/nohz_full/rcu_nocbs/hugepages)"
+        msg: "Rebooting for sap_vm host tuning (isolcpus/nohz_full/rcu_nocbs/hugepages/mitigations=off)"
         reboot_timeout: "{{ vm_host_reboot_timeout | int }}"
 
     - name: Re-gather hypervisor facts after reboot

@@ -30,7 +30,8 @@ write_files:
   - path: /etc/tmpfiles.d/sap-thp.conf
     permissions: "0644"
     content: |
-      w /sys/kernel/mm/transparent_hugepage/enabled - - - - never
+      w /sys/kernel/mm/transparent_hugepage/enabled - - - - always
+      w /sys/kernel/mm/transparent_hugepage/defrag - - - - always
 
 yum_repos:
 {% for repo in vm_repos %}

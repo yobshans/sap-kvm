@@ -79,8 +79,9 @@ doesn't skew early benchmark numbers. Requires libvirt ≥ 6.0.0 / QEMU ≥ 4.0;
 set `-e vm_memory_prefault=false` if an older libvirt rejects the
 `<allocation>` element.
 
-Inside the guest, transparent hugepages are set to `never`
-(`/sys/kernel/mm/transparent_hugepage/enabled`) and persisted with
+Inside the guest, transparent hugepages are set to `always`
+(`/sys/kernel/mm/transparent_hugepage/enabled` and
+`/sys/kernel/mm/transparent_hugepage/defrag`) and persisted with
 `/etc/tmpfiles.d/sap-thp.conf`.
 
 ### Disk
@@ -253,7 +254,7 @@ The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
 > `vm_vcpus` override), but **do not run this role against a shared or
 > production hypervisor without accounting for that.**
 
-### CPU isolation + static hugepages (`tasks/host_tuning.yml`)
+### CPU isolation + static hugepages + disabled CPU mitigations (`tasks/host_tuning.yml`)
 
 After topology discovery (`vm_cpu_pins`, `hugepages_per_node`,
 `hugepage_nodes`) but before `hugepages.yml`'s runtime reservation,
@@ -269,13 +270,15 @@ After topology discovery (`vm_cpu_pins`, `hugepages_per_node`,
   `hugepages_per_node × hugepage_nodes` (the same total `hugepages.yml`
   already computes/verifies at runtime), more reliable than runtime
   reservation on a host whose memory is already fragmented.
+- `mitigations=off` — disables CPU vulnerability mitigations on the
+  hypervisor for benchmark throughput.
 
 Example (2 sockets × 40 cores × SMT-2, 1 reserved core/node at CPU 0/40):
 
 ```bash
 grubby --update-kernel=ALL \
-  --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz" \
-  --args="default_hugepagesz=1G hugepagesz=1G hugepages=280 isolcpus=1-39,41-79 nohz_full=1-39,41-79 rcu_nocbs=1-39,41-79"
+  --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz mitigations" \
+  --args="default_hugepagesz=1G hugepagesz=1G hugepages=280 isolcpus=1-39,41-79 nohz_full=1-39,41-79 rcu_nocbs=1-39,41-79 mitigations=off"
 ```
 
 This is compared against `ansible_cmdline` (the currently **booted**
@@ -288,13 +291,10 @@ re-gathered, and the cmdline is checked again — failing loudly if it still
 doesn't match (wrong default boot entry, multiple installed kernels,
 etc.) rather than silently continuing on a half-tuned host.
 
-**Does not set `mitigations=off`** — disabling CPU vulnerability
-mitigations (Spectre/MDS/L1TF/etc.) for maximum benchmark throughput is a
-separate, security-relevant decision this role does not make for you. Add
-it yourself with your own `grubby --update-kernel=ALL --args="mitigations=off"`
-+ reboot before running this role if you want it; `host_tuning.yml`'s
-`--remove-args`/`--args` only ever touch the isolcpus/hugepages keys above
-and won't disturb it.
+**Sets `mitigations=off`** — disabling CPU vulnerability mitigations
+(Spectre/MDS/L1TF/etc.) on the hypervisor is intentional for benchmark
+throughput, but it is security-relevant and host-wide. Do not run this role
+against a shared or production hypervisor unless that exposure is acceptable.
 
 ### KVM kernel module tuning (`tasks/kvm_tuning.yml`)
 
@@ -305,9 +305,10 @@ VM on this hypervisor, not just this one:
 
 | Parameter | Default | Why |
 |---|---|---|
-| `/sys/module/kvm/parameters/halt_poll_ns` | `vm_kvm_halt_poll_ns` (500000) | vCPU busy-waits longer before halting, reducing wakeup latency |
+| `/sys/module/kvm/parameters/halt_poll_ns` | `vm_kvm_halt_poll_ns` (2000000) | vCPU busy-waits longer before halting, reducing wakeup latency |
 | `/sys/module/kvm/parameters/lapic_timer_advance_ns` | `vm_kvm_lapic_timer_advance_ns` (1000) | Compensates for VMEXIT latency on lapic timer delivery |
 | `/sys/module/kvm_intel/parameters/ple_gap` | `vm_kvm_ple_gap` (0) | Disables Pause-Loop Exiting — benchmark workloads with spinning locks (e.g. SAP PBO) cause unnecessary VMEXITs under PLE |
+| `/sys/module/kvm_intel/parameters/enable_apicv` | `Y` | Enables APICv and posted interrupts on Intel hosts |
 
 Applied live via sysfs (effective immediately, no reboot) and persisted to
 `/etc/modprobe.d/kvm-tuning.conf` so the same values come back on the next
@@ -632,7 +633,7 @@ Useful extra-vars:
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
 | `vm_memory_prefault` | `true` | Add `<allocation mode='immediate'/>` to pre-fault all guest memory at boot |
 | `vm_host_reboot_timeout` | `600` | Seconds to wait for the hypervisor to come back after `host_tuning.yml` reboots it |
-| `vm_kvm_halt_poll_ns` | `500000` | `kvm` module `halt_poll_ns` (host-wide) |
+| `vm_kvm_halt_poll_ns` | `2000000` | `kvm` module `halt_poll_ns` (host-wide) |
 | `vm_kvm_lapic_timer_advance_ns` | `1000` | `kvm` module `lapic_timer_advance_ns` (host-wide) |
 | `vm_kvm_ple_gap` | `0` | `kvm_intel` module `ple_gap` (host-wide; skipped on AMD) |
 

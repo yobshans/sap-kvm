@@ -19,7 +19,7 @@
       tags: [always, topology]
   tags: [always, topology]
 
-- name: Include hypervisor host tuning (CPU isolation + static hugepages; may reboot the hypervisor)
+- name: Include hypervisor host tuning (CPU isolation + static hugepages + mitigations=off; may reboot the hypervisor)
   ansible.builtin.include_tasks: host_tuning.yml
   tags: [host_tuning]
 
