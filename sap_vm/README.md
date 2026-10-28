@@ -79,10 +79,12 @@ doesn't skew early benchmark numbers. Requires libvirt ≥ 6.0.0 / QEMU ≥ 4.0;
 set `-e vm_memory_prefault=false` if an older libvirt rejects the
 `<allocation>` element.
 
-Inside the guest, transparent hugepages are set to `always`
+Inside the guest, the kernel command line includes
+`transparent_hugepage=always` so transparent hugepages are enabled before
+tuned starts. The live sysfs knobs
 (`/sys/kernel/mm/transparent_hugepage/enabled` and
-`/sys/kernel/mm/transparent_hugepage/defrag`) and persisted with
-`/etc/tmpfiles.d/sap-thp.conf`.
+`/sys/kernel/mm/transparent_hugepage/defrag`) are also set to `always` and
+persisted with `/etc/tmpfiles.d/sap-thp.conf`.
 
 ### Disk
 

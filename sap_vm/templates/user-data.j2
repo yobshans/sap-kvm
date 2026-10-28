@@ -20,6 +20,10 @@ chpasswd:
       password: "{{ vm_root_password }}"
       type: text
 
+bootcmd:
+  - grubby --update-kernel=ALL --args="transparent_hugepage=always"
+  - [ sh, -c, "grep -qw transparent_hugepage=always /proc/cmdline || reboot" ]
+
 write_files:
   - path: /etc/ssh/sshd_config.d/00-sap.conf
     permissions: "0644"
