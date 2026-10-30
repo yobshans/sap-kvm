@@ -58,6 +58,10 @@ vm_tsc_frequency: auto
 hugepages_size_kb: 1048576
 hugepages_per_node: auto
 hugepage_nodes: auto
+# Drop caches and compact memory before trying to allocate 1 GiB hugepages.
+# This helps on a fragmented running hypervisor; set false on a shared host
+# where those two global memory operations would be too disruptive.
+vm_hugepage_prepare_memory: true
 
 # --- Hypervisor host tuning for CPU-pinned benchmarking (SAP PBO/HCMT) ---
 # tasks/host_tuning.yml always runs (no opt-out flag) and compares the

@@ -9,6 +9,18 @@
   loop: "{{ hugepage_nodes }}"
   register: hp_current
 
+- name: Drop caches and compact memory before hugepage allocation
+  when: vm_hugepage_prepare_memory | default(true) | bool
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+
+      sync
+      echo 3 > /proc/sys/vm/drop_caches
+      echo 1 > /proc/sys/vm/compact_memory
+  changed_when: true
+
 - name: Reserve hugepages on each NUMA node
   ansible.builtin.copy:
     dest: "/sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages"
