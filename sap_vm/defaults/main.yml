@@ -177,9 +177,9 @@ vm_disk_active_path: "{{ vm_disk_raw_path if guest_raw_image | bool else vm_disk
 #   vm_nvme: true -- tasks/nvme.yml instead discovers an UNUSED NVMe device
 #     on the hypervisor (lsblk TRAN=nvme with no partitions/LVM/mountpoint),
 #     binds it to vfio-pci, and PCI-passes it straight through to the guest
-#     (<hostdev>) -- no vdb/qcow2 is created at all. Requires IOMMU enabled
-#     on the HYPERVISOR kernel (intel_iommu=on/amd_iommu=on + iommu=pt); the
-#     role fails fast with grubby instructions if it is not. See README.md.
+#     (<hostdev>) -- no vdb/qcow2 is created at all. Host tuning automatically
+#     adds the correct Intel/AMD IOMMU kernel arguments and reboots once when
+#     needed; tasks/nvme.yml then verifies IOMMU is active before binding.
 vm_nvme: false
 vm_data_disk_size: "{{ vm_disk_size }}"
 vm_data_disk_path: "{{ kvm_base_dir }}/{{ vm_name }}-data.qcow2"

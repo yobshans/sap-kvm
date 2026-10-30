@@ -139,13 +139,11 @@ always exists — it's what the guest boots from. `vm_nvme` only controls a
 
 **`vm_nvme=true` discovery/bind sequence** (idempotent — safe to re-run):
 
-1. Fail fast if the hypervisor kernel has no `/sys/kernel/iommu_groups`
-   (IOMMU not enabled):
-   ```bash
-   grubby --update-kernel=ALL --args="intel_iommu=on iommu=pt"   # Intel
-   grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
-   reboot
-   ```
+1. When `vm_nvme=true`, host tuning automatically adds the correct IOMMU
+   kernel arguments (`intel_iommu=on iommu=pt` on Intel, or
+   `amd_iommu=on iommu=pt` on AMD) and reboots the hypervisor once with the
+   other host-tuning changes. No manual IOMMU setup or interactive prompt is
+   required.
 2. Discovery is **PCI-first, not `lsblk`-first**: `lspci -D -d ::0108`
    enumerates every NVMe-class PCI controller regardless of which driver
    currently owns it. This matters because `lsblk`/`/sys/class/nvme` only
@@ -595,11 +593,15 @@ ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_vcpus=20
 
 # Attach an unused hypervisor NVMe device to the guest via PCI passthrough
-# (vdb) instead of a local qcow2 data disk; requires IOMMU already enabled
-# on the hypervisor kernel (see "NVMe PCI passthrough" above)
+# (vdb) instead of a local qcow2 data disk. IOMMU is enabled automatically
+# as part of host tuning; no manual grubby/reboot step is needed.
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
-  -e vm_nvme=true
+  -e download_guest_image=true \
+  -e destroy_existing_vm=true \
+  -e vm_nvme=true \
+  -e guest_raw_image=true \
+  -e vm_disk_size=340G
 
 # Explicit size for the local qcow2 data disk (vm_nvme=false, the default)
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
