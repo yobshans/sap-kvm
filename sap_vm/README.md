@@ -67,10 +67,12 @@ sees normal RAM that is already 1 GiB-backed by the host.
 5. Total guest RAM = per-node RAM × NUMA nodes, and not below
    `vm_memory_min_gib` (default **64 GiB**) so HCMT is not given a 1–2 GiB VM.
 
-1 GiB pages usually cannot be allocated on a fragmented running hypervisor. If
-runtime reservation fails, the role stops and prints `grubby` commands. Set
-`nr_hugepages` on the **host** kernel command line, **reboot the hypervisor**,
-then re-run.
+The role sizes the guest to the available NUMA memory and reserves the matching
+number of 1 GiB hugepages. It also measures current hugepage usage before host
+tuning and adds that shortfall to the static and runtime reservations, so pages
+already used by another process do not leave QEMU with an exact-fit shortage.
+If enough free hugepages still cannot be provided, the role fails before VM
+start with the per-NUMA `nr_hugepages` and `free_hugepages` values.
 
 `vm_memory_prefault` (default `true`) adds `<allocation mode='immediate'/>`
 inside `<memoryBacking>` in the domain XML, forcing all guest memory to be

@@ -19,6 +19,10 @@
       tags: [always, topology]
   tags: [always, topology]
 
+- name: Include hugepage usage margin calculation
+  ansible.builtin.include_tasks: hugepages_margin.yml
+  tags: [always, hugepages]
+
 - name: Include hypervisor host tuning (CPU isolation + static hugepages + mitigations=off; may reboot the hypervisor)
   ansible.builtin.include_tasks: host_tuning.yml
   tags: [host_tuning]
