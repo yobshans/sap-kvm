@@ -216,6 +216,14 @@ mount /dev/nvme0n1p1 /hana/data
 mount /dev/nvme0n1p2 /hana/log
 ```
 
+Before creating a KVM guest with `vm_nvme=true`, the role also resets a
+hypervisor NVMe device that was previously used for host-side SAP HANA /
+PBO. When `/hana/data` and `/hana/log` are both mounted from the same NVMe
+namespace, the role unmounts them, removes their `/etc/fstab` entries,
+wipes the partitions and device, and removes the SAP resource-limit,
+tmpfiles, and sysctl configuration files left by the host benchmark run.
+This cleanup is noninteractive and runs before PCI passthrough preparation.
+
 Destroying the VM (`destroy_existing_vm=true`) removes the local data
 qcow2 file if one was used, but **does not** unbind a passed-through NVMe
 device from `vfio-pci` — it's physical hardware, not a file under
@@ -643,7 +651,8 @@ Useful extra-vars:
 
 Tags: `preflight`, `cleanup`, `topology` (always), `host_tuning`,
 `kvm_tuning`, `hugepages`, `disk`, `raw_convert`, `data_disk`, `nvme`,
-`cloud_init`, `vm_define`, `post_boot`, `repo_update`, `verify`.
+`nvme_cleanup`, `cloud_init`, `vm_define`, `post_boot`, `repo_update`,
+`verify`.
 
 After a successful run, from the hypervisor:
 

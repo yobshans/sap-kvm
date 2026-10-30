@@ -45,6 +45,11 @@
   when: not (vm_nvme | bool)
   tags: [disk, data_disk]
 
+- name: Include hypervisor NVMe cleanup before PCI passthrough
+  ansible.builtin.include_tasks: nvme_host_cleanup.yml
+  when: vm_nvme | bool
+  tags: [nvme_cleanup]
+
 - name: Include NVMe PCI passthrough preparation (when vm_nvme is true)
   ansible.builtin.include_tasks: nvme.yml
   when: vm_nvme | bool
