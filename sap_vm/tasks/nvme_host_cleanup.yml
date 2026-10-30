@@ -1,135 +1,86 @@
 ---
-# sap_vm/tasks/nvme_host_cleanup.yml — Reset a hypervisor NVMe device that
-# was used for host-side SAP HANA / PBO before handing it to a KVM guest.
+# sap_vm/tasks/nvme_host_cleanup.yml — Reset a hypervisor NVMe device before
+# handing it to a KVM guest for PCI passthrough.
 #
 # This runs before tasks/nvme.yml when vm_nvme=true. It is intentionally
-# noninteractive and only targets the NVMe namespace backing /hana/data and
-# /hana/log on the hypervisor.
+# noninteractive and targets vm_nvme_device (default /dev/nvme0n1), even if
+# /hana/data and /hana/log are not currently mounted, so a device left with
+# partitions from a previous host-side SAP HANA / PBO run is made eligible
+# for passthrough.
 
-- name: Check whether /hana/data is mounted on the hypervisor
+- name: Validate the configured NVMe device
   ansible.builtin.command:
-    cmd: findmnt -no SOURCE /hana/data
-  register: _hana_data_source
+    cmd: "lsblk -ndo TRAN {{ vm_nvme_device }}"
+  register: _vm_nvme_transport
   changed_when: false
-  failed_when: false
+  failed_when: _vm_nvme_transport.stdout | trim != 'nvme'
 
-- name: Check whether /hana/log is mounted on the hypervisor
-  ansible.builtin.command:
-    cmd: findmnt -no SOURCE /hana/log
-  register: _hana_log_source
-  changed_when: false
-  failed_when: false
-
-- name: Resolve the parent NVMe device for /hana/data
-  when: _hana_data_source.rc == 0
+- name: Find mountpoints on the configured NVMe device
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
       set -euo pipefail
 
-      src="{{ _hana_data_source.stdout | trim }}"
-      parent_name=$(lsblk -no PKNAME "$src")
-      if [[ -n "$parent_name" ]]; then
-          printf '/dev/%s\n' "$parent_name"
-      else
-          printf '%s\n' "$src"
-      fi
-  register: _hana_data_parent
+      lsblk -nrpo NAME,MOUNTPOINT "{{ vm_nvme_device }}" |
+        awk '$2 != "" {print $2}'
+  register: _vm_nvme_mountpoints
   changed_when: false
 
-- name: Resolve the parent NVMe device for /hana/log
-  when: _hana_log_source.rc == 0
+- name: Unmount filesystems on the configured NVMe device
+  ansible.builtin.command:
+    cmd: "umount {{ item }}"
+  loop: "{{ _vm_nvme_mountpoints.stdout_lines }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Remove SAP HANA data mount from /etc/fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\s*[^#].*\s/hana/data\s+'
+    state: absent
+
+- name: Remove SAP HANA log mount from /etc/fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\s*[^#].*\s/hana/log\s+'
+    state: absent
+
+- name: Wipe partitions and signatures on the configured NVMe device
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
       set -euo pipefail
 
-      src="{{ _hana_log_source.stdout | trim }}"
-      parent_name=$(lsblk -no PKNAME "$src")
-      if [[ -n "$parent_name" ]]; then
-          printf '/dev/%s\n' "$parent_name"
-      else
-          printf '%s\n' "$src"
-      fi
-  register: _hana_log_parent
+      dev="{{ vm_nvme_device }}"
+      mapfile -t parts < <(
+          lsblk -nrpo NAME,TYPE "$dev" | awk '$2 == "part" {print $1}'
+      )
+      for part in "${parts[@]}"; do
+          wipefs -af "$part" || true
+      done
+      wipefs -af "$dev" || true
+      partprobe "$dev" || true
+
+- name: Remove SAP resource-limit and tuning configuration
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/security/limits.d/99-sap.conf
+    - /etc/tmpfiles.d/sap.conf
+    - /etc/sysctl.d/sap.conf
+
+- name: Reload sysctl settings after SAP configuration removal
+  ansible.builtin.command:
+    cmd: sysctl --system
   changed_when: false
 
-- name: Determine whether host-side SAP HANA storage is on one NVMe device
-  when:
-    - _hana_data_source.rc == 0
-    - _hana_log_source.rc == 0
-    - _hana_data_parent.stdout == _hana_log_parent.stdout
-    - _hana_data_parent.stdout is match('^/dev/nvme')
-  ansible.builtin.set_fact:
-    vm_nvme_host_cleanup_device: "{{ _hana_data_parent.stdout | trim }}"
-    vm_nvme_host_cleanup_needed: true
+- name: Show the reset NVMe device
+  ansible.builtin.command:
+    cmd: "lsblk {{ vm_nvme_device }}"
+  register: _vm_nvme_cleanup_lsblk
+  changed_when: false
 
-- name: Skip host-side NVMe cleanup when SAP HANA is not using NVMe
-  when: not (vm_nvme_host_cleanup_needed | default(false) | bool)
+- name: NVMe host cleanup summary
   ansible.builtin.debug:
-    msg: >-
-      /hana/data and /hana/log are not both mounted from the same NVMe
-      device; skipping host-side NVMe reset before KVM passthrough.
-
-- name: Reset the host-side SAP HANA NVMe device
-  when: vm_nvme_host_cleanup_needed | default(false) | bool
-  block:
-    - name: Unmount /hana/data
-      ansible.builtin.command:
-        cmd: umount /hana/data
-
-    - name: Unmount /hana/log
-      ansible.builtin.command:
-        cmd: umount /hana/log
-
-    - name: Remove /hana/data from /etc/fstab
-      ansible.builtin.lineinfile:
-        path: /etc/fstab
-        regexp: '^\s*[^#].*\s/hana/data\s+'
-        state: absent
-
-    - name: Remove /hana/log from /etc/fstab
-      ansible.builtin.lineinfile:
-        path: /etc/fstab
-        regexp: '^\s*[^#].*\s/hana/log\s+'
-        state: absent
-
-    - name: Wipe the SAP HANA NVMe partitions and device
-      ansible.builtin.shell:
-        executable: /bin/bash
-        cmd: |
-          set -euo pipefail
-
-          dev="{{ vm_nvme_host_cleanup_device }}"
-          mapfile -t parts < <(
-              lsblk -nrpo NAME,TYPE "$dev" | awk '$2 == "part" {print $1}'
-          )
-          for part in "${parts[@]}"; do
-              wipefs -af "$part" || true
-          done
-          wipefs -af "$dev" || true
-          partprobe "$dev" || true
-
-    - name: Remove SAP resource-limit and tuning configuration
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/security/limits.d/99-sap.conf
-        - /etc/tmpfiles.d/sap.conf
-        - /etc/sysctl.d/sap.conf
-
-    - name: Reload sysctl settings after SAP configuration removal
-      ansible.builtin.command:
-        cmd: sysctl --system
-      changed_when: false
-
-    - name: Show the reset NVMe device
-      ansible.builtin.command:
-        cmd: "lsblk {{ vm_nvme_host_cleanup_device }}"
-      register: _nvme_host_cleanup_lsblk
-      changed_when: false
-
-    - name: NVMe host cleanup summary
-      ansible.builtin.debug:
-        msg: "{{ _nvme_host_cleanup_lsblk.stdout_lines }}"
+    msg: "{{ _vm_nvme_cleanup_lsblk.stdout_lines }}"

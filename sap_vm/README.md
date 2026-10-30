@@ -216,13 +216,14 @@ mount /dev/nvme0n1p1 /hana/data
 mount /dev/nvme0n1p2 /hana/log
 ```
 
-Before creating a KVM guest with `vm_nvme=true`, the role also resets a
-hypervisor NVMe device that was previously used for host-side SAP HANA /
-PBO. When `/hana/data` and `/hana/log` are both mounted from the same NVMe
-namespace, the role unmounts them, removes their `/etc/fstab` entries,
-wipes the partitions and device, and removes the SAP resource-limit,
-tmpfiles, and sysctl configuration files left by the host benchmark run.
-This cleanup is noninteractive and runs before PCI passthrough preparation.
+Before creating a KVM guest with `vm_nvme=true`, the role resets the
+hypervisor NVMe namespace configured by `vm_nvme_device` (default
+`/dev/nvme0n1`). It unmounts any filesystems on that device, removes the
+`/hana/data` and `/hana/log` entries from `/etc/fstab`, wipes the
+partitions and device, and removes the SAP resource-limit, tmpfiles, and
+sysctl configuration files left by a host-side SAP HANA / PBO run. This
+cleanup is noninteractive and runs before PCI passthrough preparation, even
+when `/hana/data` and `/hana/log` are no longer mounted.
 
 Destroying the VM (`destroy_existing_vm=true`) removes the local data
 qcow2 file if one was used, but **does not** unbind a passed-through NVMe
@@ -637,6 +638,7 @@ Useful extra-vars:
 | `guest_raw_image` | `false` | Run the guest off `vm_disk_raw_path` (raw) instead of `vm_disk_path` (qcow2) |
 | `guest_raw_image_remove_qcow2` | `false` | Delete the pre-conversion qcow2 after a successful raw conversion |
 | `vm_nvme` | `false` | Attach the secondary data disk (`vdb`) as an NVMe PCI passthrough device instead of a local qcow2 file |
+| `vm_nvme_device` | `/dev/nvme0n1` | Hypervisor NVMe namespace reset before PCI passthrough when `vm_nvme=true` |
 | `vm_data_disk_size` | `vm_disk_size` | Size of the local qcow2 data disk when `vm_nvme=false` |
 | `vm_data_disk_path` | `{kvm_base_dir}/{vm_name}-data.qcow2` | Path of the local qcow2 data disk when `vm_nvme=false` |
 | `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |

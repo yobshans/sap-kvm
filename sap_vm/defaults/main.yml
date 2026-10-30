@@ -181,6 +181,9 @@ vm_disk_active_path: "{{ vm_disk_raw_path if guest_raw_image | bool else vm_disk
 #     adds the correct Intel/AMD IOMMU kernel arguments and reboots once when
 #     needed; tasks/nvme.yml then verifies IOMMU is active before binding.
 vm_nvme: false
+# Host NVMe namespace reset by tasks/nvme_host_cleanup.yml before PCI
+# passthrough. Override this when the passthrough device is not nvme0n1.
+vm_nvme_device: /dev/nvme0n1
 vm_data_disk_size: "{{ vm_disk_size }}"
 vm_data_disk_path: "{{ kvm_base_dir }}/{{ vm_name }}-data.qcow2"
 
