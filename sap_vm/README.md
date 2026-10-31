@@ -393,8 +393,12 @@ exceeds Ansible `get_url`'s 10s default.
 ## First boot (cloud-init)
 
 A NoCloud cidata ISO is built with `community.libvirt.virt_volume`
-`create_cidata_cdrom` (Rock Ridge names `user-data` / `meta-data`). Cloud-init
-applies:
+`create_cidata_cdrom` (Rock Ridge names `user-data` / `meta-data` /
+`network-config`). The network config explicitly enables DHCP on the guest’s
+first Ethernet interface, so a base image without default network configuration
+still requests a libvirt lease.
+
+Cloud-init then applies:
 
 - Hostname / FQDN (`vm_hostname`.`vm_domain`, default
   `sap-kvm-vm.lab.eng.tlv2.redhat.com`)
