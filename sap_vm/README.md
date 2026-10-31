@@ -69,16 +69,15 @@ sees normal RAM that is already 1 GiB-backed by the host.
 
 The role sizes the guest to the available NUMA memory and reserves the matching
 number of 1 GiB hugepages. The total reservation is persisted in
-`/etc/sysctl.d/sap-hana-hugepages.conf`, and the live per-NUMA values are
-written after all host-side NVMe cleanup so a later `sysctl --system` cannot
-reset them to zero. Before reserving them, the role stops host-side SAP HANA
-services and any leftover PBO benchmark process, waits briefly for their memory
-to be released, drops page/slab caches, and asks the kernel to compact memory.
-It also measures current hugepage usage before host tuning and adds that
-shortfall to the static and runtime reservations, so pages already used by
-another process do not leave QEMU with an exact-fit shortage. If enough free
-hugepages still cannot be provided, the role fails before VM start with the
-per-NUMA `nr_hugepages` and `free_hugepages` values.
+`/etc/sysctl.d/sap-hana-hugepages.conf`, applied immediately with `sysctl -p`,
+and the live per-NUMA values are written after all host-side NVMe cleanup so a
+later `sysctl --system` cannot reset them to zero. Before reserving them, the
+role stops host-side SAP HANA services, terminates any leftover HANA or PBO
+processes, waits for them to exit, drops page/slab caches, and asks the kernel
+to compact memory. Hugepage allocation is retried with cache drop and
+compaction between attempts. If enough free hugepages still cannot be provided,
+the role fails before VM start with the per-NUMA `nr_hugepages` and
+`free_hugepages` values.
 
 `vm_memory_prefault` (default `true`) adds `<allocation mode='immediate'/>`
 inside `<memoryBacking>` in the domain XML, forcing all guest memory to be

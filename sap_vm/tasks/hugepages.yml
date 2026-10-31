@@ -16,6 +16,11 @@
     content: |
       vm.nr_hugepages = {{ (hugepages_per_node | int) * (hugepage_nodes | length) }}
 
+- name: Apply the persistent hugepage reservation now
+  ansible.builtin.command:
+    cmd: sysctl -p /etc/sysctl.d/sap-hana-hugepages.conf
+  changed_when: true
+
 - name: Drop caches and compact memory before hugepage allocation
   when: vm_hugepage_prepare_memory | default(true) | bool
   ansible.builtin.shell:
@@ -29,14 +34,31 @@
   changed_when: true
 
 - name: Reserve hugepages on each NUMA node
-  ansible.builtin.copy:
-    dest: "/sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages"
-    content: "{{ hugepages_per_node }}\n"
-    unsafe_writes: true
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+
+      target={{ hugepages_per_node | int }}
+      sysfs="/sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages"
+
+      for attempt in 1 2 3; do
+          sync
+          echo 3 > /proc/sys/vm/drop_caches
+          echo 1 > /proc/sys/vm/compact_memory
+          echo "$target" > "$sysfs"
+
+          actual=$(cat "$sysfs")
+          if [[ "$actual" -ge "$target" ]]; then
+              exit 0
+          fi
+
+          sleep 5
+      done
+
+      exit 1
   loop: "{{ hugepage_nodes }}"
-  loop_control:
-    index_var: hp_idx
-  when: (hp_current.results[hp_idx].content | b64decode | trim | int) < (hugepages_per_node | int)
+  changed_when: true
 
 - name: Read hugepage totals after reservation
   ansible.builtin.slurp:

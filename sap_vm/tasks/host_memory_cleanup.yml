@@ -21,6 +21,29 @@
   loop: "{{ host_hana_services.stdout_lines }}"
   failed_when: false
 
+- name: Find leftover SAP HANA processes
+  ansible.builtin.shell:
+    cmd: "pgrep -f '[h]dbdaemon|[h]dbindexserver|[h]dbnameserver|[h]dbpreprocessor|[h]dbxsengine' || true"
+  register: host_hana_processes
+  changed_when: false
+  failed_when: false
+
+- name: Stop leftover SAP HANA processes
+  ansible.builtin.shell:
+    cmd: "pkill -TERM -f '[h]dbdaemon|[h]dbindexserver|[h]dbnameserver|[h]dbpreprocessor|[h]dbxsengine' || true"
+  when: host_hana_processes.stdout_lines | length > 0
+  changed_when: true
+
+- name: Wait for leftover SAP HANA processes to exit
+  ansible.builtin.shell:
+    cmd: "pgrep -f '[h]dbdaemon|[h]dbindexserver|[h]dbnameserver|[h]dbpreprocessor|[h]dbxsengine' || true"
+  register: host_hana_process_check
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 2
+  until: host_hana_process_check.stdout_lines | length == 0
+
 # Stop a leftover PBO benchmark process if one is still running.
 - name: Find leftover PBO benchmark processes
   ansible.builtin.shell:
