@@ -19,9 +19,22 @@
       tags: [always, topology]
   tags: [always, topology]
 
-- name: Include hugepages configuration
-  ansible.builtin.include_tasks: hugepages.yml
-  tags: [hugepages]
+- name: Include hugepage usage margin calculation
+  ansible.builtin.include_tasks: hugepages_margin.yml
+  tags: [always, hugepages]
+
+- name: Include hypervisor host tuning (CPU isolation + static hugepages + mitigations=off; may reboot the hypervisor)
+  ansible.builtin.include_tasks: host_tuning.yml
+  tags: [host_tuning]
+
+- name: Include host memory cleanup before hugepage allocation
+  ansible.builtin.include_tasks: host_memory_cleanup.yml
+  when: vm_host_memory_cleanup | default(true) | bool
+  tags: [memory_cleanup]
+
+- name: Include KVM kernel module tuning (halt_poll_ns / lapic_timer_advance_ns / ple_gap)
+  ansible.builtin.include_tasks: kvm_tuning.yml
+  tags: [kvm_tuning]
 
 - name: Include disk preparation
   ansible.builtin.include_tasks: disk.yml
@@ -37,10 +50,19 @@
   when: not (vm_nvme | bool)
   tags: [disk, data_disk]
 
+- name: Include hypervisor NVMe cleanup before PCI passthrough
+  ansible.builtin.include_tasks: nvme_host_cleanup.yml
+  when: vm_nvme | bool
+  tags: [nvme_cleanup]
+
 - name: Include NVMe PCI passthrough preparation (when vm_nvme is true)
   ansible.builtin.include_tasks: nvme.yml
   when: vm_nvme | bool
   tags: [disk, nvme]
+
+- name: Include hugepages configuration
+  ansible.builtin.include_tasks: hugepages.yml
+  tags: [hugepages]
 
 - name: Include cloud-init setup
   ansible.builtin.include_tasks: cloud_init.yml

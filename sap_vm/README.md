@@ -28,8 +28,20 @@ to override; pinning still comes from the live host topology.
 | vCPUs | `sockets × cores × threads` |
 
 The first physical core of each NUMA node is left for QEMU (`emulatorpin`) and
-the IO thread (`iothreadpin`). Remaining cores are pinned 1:1: each guest
-thread pair of a core shares the host SMT sibling cpuset.
+the IO thread (`iothreadpin`). Remaining cores are pinned **strictly 1:1**:
+each guest vCPU gets exactly **one** host SMT thread, e.g.
+
+```xml
+<vcpupin vcpu='0' cpuset='2'/>
+<vcpupin vcpu='1' cpuset='42'/>
+```
+
+not the whole sibling pair shared across both vCPUs of a core
+(`cpuset='2,42'` for both) — letting the host scheduler bounce a vCPU
+between its own two SMT siblings hurts cache locality and adds jitter for
+CPU-pinned benchmarks (SAP PBO/HCMT). This is purely a libvirt
+`<cputune>` change (`templates/hana_topology.j2`); it doesn't change vCPU
+*count*.
 
 Example: 2 sockets, 20 cores/socket, SMT-2 → reserve 1 core/node →
 `2 × 19 × 2 = 76` vCPUs, 2 NUMA cells.
@@ -55,10 +67,18 @@ sees normal RAM that is already 1 GiB-backed by the host.
 5. Total guest RAM = per-node RAM × NUMA nodes, and not below
    `vm_memory_min_gib` (default **64 GiB**) so HCMT is not given a 1–2 GiB VM.
 
-1 GiB pages usually cannot be allocated on a fragmented running hypervisor. If
-runtime reservation fails, the role stops and prints `grubby` commands. Set
-`nr_hugepages` on the **host** kernel command line, **reboot the hypervisor**,
-then re-run.
+The role sizes the guest to the available NUMA memory and reserves the matching
+number of 1 GiB hugepages. The total reservation is persisted in
+`/etc/sysctl.d/sap-hana-hugepages.conf`, and the live per-NUMA values are
+written after all host-side NVMe cleanup so a later `sysctl --system` cannot
+reset them to zero. Before reserving them, the role stops host-side SAP HANA
+services and any leftover PBO benchmark process, waits briefly for their memory
+to be released, drops page/slab caches, and asks the kernel to compact memory.
+It also measures current hugepage usage before host tuning and adds that
+shortfall to the static and runtime reservations, so pages already used by
+another process do not leave QEMU with an exact-fit shortage. If enough free
+hugepages still cannot be provided, the role fails before VM start with the
+per-NUMA `nr_hugepages` and `free_hugepages` values.
 
 `vm_memory_prefault` (default `true`) adds `<allocation mode='immediate'/>`
 inside `<memoryBacking>` in the domain XML, forcing all guest memory to be
@@ -67,9 +87,12 @@ doesn't skew early benchmark numbers. Requires libvirt ≥ 6.0.0 / QEMU ≥ 4.0;
 set `-e vm_memory_prefault=false` if an older libvirt rejects the
 `<allocation>` element.
 
-Inside the guest, transparent hugepages are set to `never`
-(`/sys/kernel/mm/transparent_hugepage/enabled`) and persisted with
-`/etc/tmpfiles.d/sap-thp.conf`.
+Inside the guest, the kernel command line includes
+`transparent_hugepage=always` so transparent hugepages are enabled before
+tuned starts. The live sysfs knobs
+(`/sys/kernel/mm/transparent_hugepage/enabled` and
+`/sys/kernel/mm/transparent_hugepage/defrag`) are also set to `always` and
+persisted with `/etc/tmpfiles.d/sap-thp.conf`.
 
 ### Disk
 
@@ -124,13 +147,11 @@ always exists — it's what the guest boots from. `vm_nvme` only controls a
 
 **`vm_nvme=true` discovery/bind sequence** (idempotent — safe to re-run):
 
-1. Fail fast if the hypervisor kernel has no `/sys/kernel/iommu_groups`
-   (IOMMU not enabled):
-   ```bash
-   grubby --update-kernel=ALL --args="intel_iommu=on iommu=pt"   # Intel
-   grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
-   reboot
-   ```
+1. When `vm_nvme=true`, host tuning automatically adds the correct IOMMU
+   kernel arguments (`intel_iommu=on iommu=pt` on Intel, or
+   `amd_iommu=on iommu=pt` on AMD) and reboots the hypervisor once with the
+   other host-tuning changes. No manual IOMMU setup or interactive prompt is
+   required.
 2. Discovery is **PCI-first, not `lsblk`-first**: `lspci -D -d ::0108`
    enumerates every NVMe-class PCI controller regardless of which driver
    currently owns it. This matters because `lsblk`/`/sys/class/nvme` only
@@ -203,6 +224,15 @@ mount /dev/nvme0n1p1 /hana/data
 mount /dev/nvme0n1p2 /hana/log
 ```
 
+Before creating a KVM guest with `vm_nvme=true`, the role resets the
+hypervisor NVMe namespace configured by `vm_nvme_device` (default
+`/dev/nvme0n1`). It unmounts any filesystems on that device, removes the
+`/hana/data` and `/hana/log` entries from `/etc/fstab`, wipes the
+partitions and device, and removes the SAP resource-limit, tmpfiles, and
+sysctl configuration files left by a host-side SAP HANA / PBO run. This
+cleanup is noninteractive and runs before PCI passthrough preparation, even
+when `/hana/data` and `/hana/log` are no longer mounted.
+
 Destroying the VM (`destroy_existing_vm=true`) removes the local data
 qcow2 file if one was used, but **does not** unbind a passed-through NVMe
 device from `vfio-pci` — it's physical hardware, not a file under
@@ -228,6 +258,82 @@ frequency is applied and start is retried. Override with
 The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
 `x2apic`. Memory ballooning is disabled.
 
+## Hypervisor host tuning for CPU-pinned benchmarking (SAP PBO/HCMT)
+
+> ⚠️ **This section changes the HYPERVISOR, not just the guest, and can
+> reboot it.** `tasks/host_tuning.yml` always runs (there is no opt-out
+> flag) and, when the running kernel's cmdline doesn't already carry the
+> values the current topology needs, it runs `grubby` and **reboots the
+> hypervisor** — taking down **every other VM currently running on that
+> host**, not just this one. It is idempotent (a re-run with an
+> already-matching cmdline is a no-op, and it only reboots again if the
+> topology changes enough to need different values — e.g. a different
+> `vm_vcpus` override), but **do not run this role against a shared or
+> production hypervisor without accounting for that.**
+
+### CPU isolation + static hugepages + disabled CPU mitigations (`tasks/host_tuning.yml`)
+
+After topology discovery (`vm_cpu_pins`, `hugepages_per_node`,
+`hugepage_nodes`) but before `hugepages.yml`'s runtime reservation,
+`templates/host_tuning.j2` computes the desired hypervisor kernel cmdline:
+
+- `isolcpus=<range>` / `nohz_full=<range>` / `rcu_nocbs=<range>` — exactly
+  the host CPUs `vm_cpu_pins` dedicates to guest vCPUs (the 1:1 pins
+  above), collapsed into ranges. The reserved emulator/iothread core is
+  deliberately **left out** of this range — it needs to keep receiving
+  normal host scheduling/interrupts/timers, so it's never isolated.
+- `default_hugepagesz=1G hugepagesz=1G hugepages=<N>` — a static,
+  boot-time 1 GiB hugepage reservation sized from
+  `hugepages_per_node × hugepage_nodes` (the same total `hugepages.yml`
+  already computes/verifies at runtime), more reliable than runtime
+  reservation on a host whose memory is already fragmented.
+- `mitigations=off` — disables CPU vulnerability mitigations on the
+  hypervisor for benchmark throughput.
+
+Example (2 sockets × 40 cores × SMT-2, 1 reserved core/node at CPU 0/40):
+
+```bash
+grubby --update-kernel=ALL \
+  --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz mitigations" \
+  --args="default_hugepagesz=1G hugepagesz=1G hugepages=280 isolcpus=1-39,41-79 nohz_full=1-39,41-79 rcu_nocbs=1-39,41-79 mitigations=off"
+```
+
+This is compared against `ansible_cmdline` (the currently **booted**
+kernel's `/proc/cmdline`, not just what's configured for the next boot):
+if everything already matches, nothing happens. Otherwise, `grubby` runs
+(`--remove-args` first so repeated topology changes replace the old
+values instead of accumulating duplicates), the hypervisor **reboots**
+(`ansible.builtin.reboot`, waits for it to come back), facts are
+re-gathered, and the cmdline is checked again — failing loudly if it still
+doesn't match (wrong default boot entry, multiple installed kernels,
+etc.) rather than silently continuing on a half-tuned host.
+
+**Sets `mitigations=off`** — disabling CPU vulnerability mitigations
+(Spectre/MDS/L1TF/etc.) on the hypervisor is intentional for benchmark
+throughput, but it is security-relevant and host-wide. Do not run this role
+against a shared or production hypervisor unless that exposure is acceptable.
+
+### KVM kernel module tuning (`tasks/kvm_tuning.yml`)
+
+Runs right after host tuning (so it applies to the freshly (re)loaded
+module if a reboot just happened). These are global `kvm`/`kvm_intel`
+kernel module parameters — like host tuning above, they affect **every**
+VM on this hypervisor, not just this one:
+
+| Parameter | Default | Why |
+|---|---|---|
+| `/sys/module/kvm/parameters/halt_poll_ns` | `vm_kvm_halt_poll_ns` (2000000) | vCPU busy-waits longer before halting, reducing wakeup latency |
+| `/sys/module/kvm/parameters/lapic_timer_advance_ns` | `vm_kvm_lapic_timer_advance_ns` (1000) | Compensates for VMEXIT latency on lapic timer delivery |
+| `/sys/module/kvm_intel/parameters/ple_gap` | `vm_kvm_ple_gap` (0) | Disables Pause-Loop Exiting — benchmark workloads with spinning locks (e.g. SAP PBO) cause unnecessary VMEXITs under PLE |
+| `/sys/module/kvm_intel/parameters/enable_apicv` | `Y` | Enables APICv and posted interrupts on Intel hosts |
+
+Applied live via sysfs (effective immediately, no reboot) and persisted to
+`/etc/modprobe.d/kvm-tuning.conf` so the same values come back on the next
+module reload/reboot. `ple_gap` is Intel-specific (Pause-Loop Exiting); on
+an AMD host (no `kvm_intel` module) that one tunable is skipped — not
+failed — with a note in the output. AMD's equivalent Pause Filter tuning
+is not currently handled by this role.
+
 ## RHEL compose (image, install repos, and update repos)
 
 Two composes are involved, and they are intentionally **different variables**:
@@ -243,7 +349,7 @@ put that at different depths, so both include whatever prefix your lab needs:
 
 | Lab | `guest_image_compose_url` (default) | `compose_url` (default) |
 |---|---|---|
-| TLV | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose` | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20261012.d.0/compose` |
+| TLV | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-20260507.1/compose` | `http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20261001.1/compose` |
 | Scale lab | `http://mirror.scalelab.redhat.com/RHEL10/10.2` (no `compose/` subdir) | same |
 
 > **Why two composes:** RHEL's `-updates-*` composes refresh package
@@ -504,11 +610,15 @@ ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_vcpus=20
 
 # Attach an unused hypervisor NVMe device to the guest via PCI passthrough
-# (vdb) instead of a local qcow2 data disk; requires IOMMU already enabled
-# on the hypervisor kernel (see "NVMe PCI passthrough" above)
+# (vdb) instead of a local qcow2 data disk. IOMMU is enabled automatically
+# as part of host tuning; no manual grubby/reboot step is needed.
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
   -e vm_root_password='...' \
-  -e vm_nvme=true
+  -e download_guest_image=true \
+  -e destroy_existing_vm=true \
+  -e vm_nvme=true \
+  -e guest_raw_image=true \
+  -e vm_disk_size=340G
 
 # Explicit size for the local qcow2 data disk (vm_nvme=false, the default)
 ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini \
@@ -527,7 +637,7 @@ Useful extra-vars:
 |---|---|---|
 | `vm_root_password` | (required) | Guest root password; never stored in git |
 | `guest_image_compose_url` | TLV RHEL-10.2-20260507.1 (GA) compose | Sources the qcow2 and first-boot guest repos; needs `BaseOS/x86_64/images/` |
-| `compose_url` | TLV RHEL-10.2-updates-20261012.d.0 compose | Sources the repos the guest is repointed at after boot, then `dnf update` |
+| `compose_url` | TLV RHEL-10.2-updates-20261001.1 compose | Sources the repos the guest is repointed at after boot, then `dnf update` |
 | `compose_release` | `10.2` | Repo names/descriptions; independent of both compose URLs |
 | `guest_image_compose_id` | `10.2-20260507.1` | Dated build id in the qcow2 filename; pair with `guest_image_compose_url`, never with `compose_url` (see `-updates-*` caveat above) |
 | `download_guest_image` | `false` | Fetch qcow2 from `guest_image_url` |
@@ -536,6 +646,7 @@ Useful extra-vars:
 | `guest_raw_image` | `false` | Run the guest off `vm_disk_raw_path` (raw) instead of `vm_disk_path` (qcow2) |
 | `guest_raw_image_remove_qcow2` | `false` | Delete the pre-conversion qcow2 after a successful raw conversion |
 | `vm_nvme` | `false` | Attach the secondary data disk (`vdb`) as an NVMe PCI passthrough device instead of a local qcow2 file |
+| `vm_nvme_device` | `/dev/nvme0n1` | Hypervisor NVMe namespace reset before PCI passthrough when `vm_nvme=true` |
 | `vm_data_disk_size` | `vm_disk_size` | Size of the local qcow2 data disk when `vm_nvme=false` |
 | `vm_data_disk_path` | `{kvm_base_dir}/{vm_name}-data.qcow2` | Path of the local qcow2 data disk when `vm_nvme=false` |
 | `cloud_init_boot_timeout` | `1800` | Seconds to wait for cloud-init's `boot-finished` marker |
@@ -543,9 +654,16 @@ Useful extra-vars:
 | `vm_domain` | `lab.eng.tlv2.redhat.com` | FQDN suffix for `/etc/hosts` |
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
 | `vm_memory_prefault` | `true` | Add `<allocation mode='immediate'/>` to pre-fault all guest memory at boot |
+| `vm_hugepage_prepare_memory` | `true` | Drop caches and compact memory before allocating 1 GiB hugepages |
+| `vm_host_memory_cleanup` | `true` | Stop host-side SAP HANA and leftover PBO processes before hugepage allocation |
+| `vm_host_reboot_timeout` | `600` | Seconds to wait for the hypervisor to come back after `host_tuning.yml` reboots it |
+| `vm_kvm_halt_poll_ns` | `2000000` | `kvm` module `halt_poll_ns` (host-wide) |
+| `vm_kvm_lapic_timer_advance_ns` | `1000` | `kvm` module `lapic_timer_advance_ns` (host-wide) |
+| `vm_kvm_ple_gap` | `0` | `kvm_intel` module `ple_gap` (host-wide; skipped on AMD) |
 
-Tags: `preflight`, `cleanup`, `topology` (always), `hugepages`, `disk`,
-`raw_convert`, `data_disk`, `nvme`, `cloud_init`, `vm_define`, `post_boot`,
+Tags: `preflight`, `cleanup`, `topology` (always), `host_tuning`,
+`memory_cleanup`, `kvm_tuning`, `hugepages`, `disk`, `raw_convert`,
+`data_disk`, `nvme`, `nvme_cleanup`, `cloud_init`, `vm_define`, `post_boot`,
 `repo_update`, `verify`.
 
 After a successful run, from the hypervisor:

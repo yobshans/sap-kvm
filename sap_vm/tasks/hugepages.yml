@@ -9,6 +9,25 @@
   loop: "{{ hugepage_nodes }}"
   register: hp_current
 
+- name: Persist the total hugepage reservation across reboots
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/sap-hana-hugepages.conf
+    mode: "0644"
+    content: |
+      vm.nr_hugepages = {{ (hugepages_per_node | int) * (hugepage_nodes | length) }}
+
+- name: Drop caches and compact memory before hugepage allocation
+  when: vm_hugepage_prepare_memory | default(true) | bool
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+
+      sync
+      echo 3 > /proc/sys/vm/drop_caches
+      echo 1 > /proc/sys/vm/compact_memory
+  changed_when: true
+
 - name: Reserve hugepages on each NUMA node
   ansible.builtin.copy:
     dest: "/sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages"
@@ -38,23 +57,22 @@
       free_hugepages={{ item.2.content | b64decode | trim }}
   loop: "{{ hugepage_nodes | zip(hp_count.results, hp_free.results) | list }}"
 
-- name: Fail if 1GiB hugepages are not reserved
+- name: Fail if enough free 1GiB hugepages are not available
   ansible.builtin.fail:
     msg: |
-      1GiB hugepages could not be reserved at runtime (kernel still reports
-      {{ hp_count.results | map(attribute='content') | map('b64decode') | map('trim') | list }} pages on nodes {{ hugepage_nodes }}).
-      Need {{ hugepages_per_node }} pages of {{ hugepages_size_kb }} KiB per NUMA node
-      ({{ (hugepages_per_node | int) * (hugepage_nodes | length) }} pages total).
+      Not enough free {{ hugepages_size_kb }} KiB hugepages are available for
+      the guest. QEMU requires at least
+      {{ hugepage_margin_required | default(hugepages_per_node) }} free pages on
+      each NUMA node.
 
-      1GiB pages must be reserved at boot. Set nr_hugepages on the kernel command
-      line, reboot, then re-run this playbook:
+      Current reserved pages:
+      {{ hp_count.results | map(attribute='content') | map('b64decode') | map('trim') | list }}
+      Current free pages:
+      {{ hp_free.results | map(attribute='content') | map('b64decode') | map('trim') | list }}
+      NUMA nodes:
+      {{ hugepage_nodes }}
 
-        grubby --update-kernel=ALL --args="default_hugepagesz=1G hugepagesz=1G hugepages={{ (hugepages_per_node | int) * (hugepage_nodes | length) }}"
-        reboot
-
-      After reboot, confirm with:
-        grep Huge /proc/meminfo
-        cat /sys/devices/system/node/node*/hugepages/hugepages-1048576kB/nr_hugepages
-
-        ansible-playbook -vv create_sap_vm.yml -i inventory_vm.ini
-  when: hp_count.results | map(attribute='content') | map('b64decode') | map('trim') | map('int') | select('lt', hugepages_per_node | int) | list | length > 0
+      The role adds a margin for pages already in use, but the host still
+      cannot provide enough free hugepages. Reboot with a larger static
+      reservation or reduce the guest memory/other hugepage consumers.
+  when: hp_free.results | map(attribute='content') | map('b64decode') | map('trim') | map('int') | select('lt', hugepage_margin_required | default(hugepages_per_node) | int) | list | length > 0
