@@ -1,0 +1,42 @@
+---
+# sap_vm/tasks/host_memory_cleanup.yml — Free host memory before creating a
+# hugepage-backed KVM guest.
+
+# Stop the host-side SAP HANA service (for example SAPHDB_00) so its resident
+# memory and any hugepages it holds are released before the guest is started.
+- name: Find SAP HANA systemd services on the hypervisor
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      systemctl list-unit-files --no-legend |
+        awk '{print $1}' |
+        grep -i '^SAPHDB' || true
+  register: host_hana_services
+  changed_when: false
+
+- name: Stop SAP HANA services on the hypervisor
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop: "{{ host_hana_services.stdout_lines }}"
+  failed_when: false
+
+# Stop a leftover PBO benchmark process if one is still running.
+- name: Find leftover PBO benchmark processes
+  ansible.builtin.shell:
+    cmd: "pgrep -f '/opt/rh/SAP/pboscript/[r]unPboffline.sh' || true"
+  register: host_pbo_processes
+  changed_when: false
+  failed_when: false
+
+- name: Stop leftover PBO benchmark processes
+  ansible.builtin.shell:
+    cmd: "pkill -TERM -f '/opt/rh/SAP/pboscript/[r]unPboffline.sh' || true"
+  when: host_pbo_processes.stdout_lines | length > 0
+  changed_when: true
+
+# Give systemd and the kernel a moment to reap the stopped processes and
+# release their anonymous memory before hugepage allocation is attempted.
+- name: Wait for stopped host processes to release memory
+  ansible.builtin.pause:
+    seconds: 5

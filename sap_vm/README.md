@@ -68,14 +68,14 @@ sees normal RAM that is already 1 GiB-backed by the host.
    `vm_memory_min_gib` (default **64 GiB**) so HCMT is not given a 1–2 GiB VM.
 
 The role sizes the guest to the available NUMA memory and reserves the matching
-number of 1 GiB hugepages. Before reserving them, it drops page/slab caches and
-asks the kernel to compact memory, which helps recover contiguous 1 GiB pages
-on a fragmented running hypervisor. It also measures current hugepage usage
-before host tuning and adds that shortfall to the static and runtime
-reservations, so pages already used by another process do not leave QEMU with
-an exact-fit shortage. If enough free hugepages still cannot be provided, the
-role fails before VM start with the per-NUMA `nr_hugepages` and
-`free_hugepages` values.
+number of 1 GiB hugepages. Before reserving them, it stops host-side SAP HANA
+services and any leftover PBO benchmark process, waits briefly for their memory
+to be released, drops page/slab caches, and asks the kernel to compact memory.
+It also measures current hugepage usage before host tuning and adds that
+shortfall to the static and runtime reservations, so pages already used by
+another process do not leave QEMU with an exact-fit shortage. If enough free
+hugepages still cannot be provided, the role fails before VM start with the
+per-NUMA `nr_hugepages` and `free_hugepages` values.
 
 `vm_memory_prefault` (default `true`) adds `<allocation mode='immediate'/>`
 inside `<memoryBacking>` in the domain XML, forcing all guest memory to be
@@ -652,15 +652,16 @@ Useful extra-vars:
 | `vm_memory_min_gib` | `64` | Floor for auto-sized guest RAM |
 | `vm_memory_prefault` | `true` | Add `<allocation mode='immediate'/>` to pre-fault all guest memory at boot |
 | `vm_hugepage_prepare_memory` | `true` | Drop caches and compact memory before allocating 1 GiB hugepages |
+| `vm_host_memory_cleanup` | `true` | Stop host-side SAP HANA and leftover PBO processes before hugepage allocation |
 | `vm_host_reboot_timeout` | `600` | Seconds to wait for the hypervisor to come back after `host_tuning.yml` reboots it |
 | `vm_kvm_halt_poll_ns` | `2000000` | `kvm` module `halt_poll_ns` (host-wide) |
 | `vm_kvm_lapic_timer_advance_ns` | `1000` | `kvm` module `lapic_timer_advance_ns` (host-wide) |
 | `vm_kvm_ple_gap` | `0` | `kvm_intel` module `ple_gap` (host-wide; skipped on AMD) |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `host_tuning`,
-`kvm_tuning`, `hugepages`, `disk`, `raw_convert`, `data_disk`, `nvme`,
-`nvme_cleanup`, `cloud_init`, `vm_define`, `post_boot`, `repo_update`,
-`verify`.
+`memory_cleanup`, `kvm_tuning`, `hugepages`, `disk`, `raw_convert`,
+`data_disk`, `nvme`, `nvme_cleanup`, `cloud_init`, `vm_define`, `post_boot`,
+`repo_update`, `verify`.
 
 After a successful run, from the hypervisor:
 

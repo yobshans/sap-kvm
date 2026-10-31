@@ -62,6 +62,9 @@ hugepage_nodes: auto
 # This helps on a fragmented running hypervisor; set false on a shared host
 # where those two global memory operations would be too disruptive.
 vm_hugepage_prepare_memory: true
+# Stop host-side SAP HANA and leftover PBO processes before allocating
+# hugepages for the new KVM guest.
+vm_host_memory_cleanup: true
 
 # --- Hypervisor host tuning for CPU-pinned benchmarking (SAP PBO/HCMT) ---
 # tasks/host_tuning.yml always runs (no opt-out flag) and compares the

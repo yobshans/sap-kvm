@@ -27,6 +27,11 @@
   ansible.builtin.include_tasks: host_tuning.yml
   tags: [host_tuning]
 
+- name: Include host memory cleanup before hugepage allocation
+  ansible.builtin.include_tasks: host_memory_cleanup.yml
+  when: vm_host_memory_cleanup | default(true) | bool
+  tags: [memory_cleanup]
+
 - name: Include KVM kernel module tuning (halt_poll_ns / lapic_timer_advance_ns / ple_gap)
   ansible.builtin.include_tasks: kvm_tuning.yml
   tags: [kvm_tuning]
