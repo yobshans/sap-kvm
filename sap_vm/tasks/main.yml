@@ -36,10 +36,6 @@
   ansible.builtin.include_tasks: kvm_tuning.yml
   tags: [kvm_tuning]
 
-- name: Include hugepages configuration
-  ansible.builtin.include_tasks: hugepages.yml
-  tags: [hugepages]
-
 - name: Include disk preparation
   ansible.builtin.include_tasks: disk.yml
   tags: [disk]
@@ -63,6 +59,10 @@
   ansible.builtin.include_tasks: nvme.yml
   when: vm_nvme | bool
   tags: [disk, nvme]
+
+- name: Include hugepages configuration
+  ansible.builtin.include_tasks: hugepages.yml
+  tags: [hugepages]
 
 - name: Include cloud-init setup
   ansible.builtin.include_tasks: cloud_init.yml

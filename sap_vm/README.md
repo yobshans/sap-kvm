@@ -68,7 +68,10 @@ sees normal RAM that is already 1 GiB-backed by the host.
    `vm_memory_min_gib` (default **64 GiB**) so HCMT is not given a 1–2 GiB VM.
 
 The role sizes the guest to the available NUMA memory and reserves the matching
-number of 1 GiB hugepages. Before reserving them, it stops host-side SAP HANA
+number of 1 GiB hugepages. The total reservation is persisted in
+`/etc/sysctl.d/sap-hana-hugepages.conf`, and the live per-NUMA values are
+written after all host-side NVMe cleanup so a later `sysctl --system` cannot
+reset them to zero. Before reserving them, the role stops host-side SAP HANA
 services and any leftover PBO benchmark process, waits briefly for their memory
 to be released, drops page/slab caches, and asks the kernel to compact memory.
 It also measures current hugepage usage before host tuning and adds that

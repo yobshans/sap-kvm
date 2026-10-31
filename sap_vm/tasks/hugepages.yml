@@ -9,6 +9,13 @@
   loop: "{{ hugepage_nodes }}"
   register: hp_current
 
+- name: Persist the total hugepage reservation across reboots
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/sap-hana-hugepages.conf
+    mode: "0644"
+    content: |
+      vm.nr_hugepages = {{ (hugepages_per_node | int) * (hugepage_nodes | length) }}
+
 - name: Drop caches and compact memory before hugepage allocation
   when: vm_hugepage_prepare_memory | default(true) | bool
   ansible.builtin.shell:
