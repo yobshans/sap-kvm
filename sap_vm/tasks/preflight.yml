@@ -8,6 +8,7 @@
     name:
       - qemu-kvm
       - libvirt
+      - edk2-ovmf
       - python3
       - python3-libvirt
       - python3-lxml
