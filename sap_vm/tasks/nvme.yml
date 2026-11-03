@@ -32,9 +32,8 @@
 #   echo "vfio-pci" > /etc/modules-load.d/vfio-pci.conf
 #   dracut -f
 #
-# Needs IOMMU enabled on the HYPERVISOR kernel first (reboot required):
-#   grubby --update-kernel=ALL --args="intel_iommu=on iommu=pt"   # Intel
-#   grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
+# IOMMU is enabled automatically by tasks/host_tuning.yml when vm_nvme=true;
+# this file only verifies that it is active before binding the controller.
 # ============================================================================
 
 - name: Check hypervisor IOMMU groups are present
@@ -43,15 +42,14 @@
     file_type: directory
   register: nvme_iommu_groups
 
-- name: Fail if IOMMU is not enabled on the hypervisor
+- name: Fail if IOMMU is not active on the hypervisor
   ansible.builtin.fail:
     msg: >-
-      vm_nvme=true requires IOMMU to be enabled on the HYPERVISOR kernel,
-      but no /sys/kernel/iommu_groups entries were found. Enable it and
-      reboot the hypervisor, then re-run this playbook:
-        grubby --update-kernel=ALL --args="intel_iommu=on iommu=pt"   # Intel
-        grubby --update-kernel=ALL --args="amd_iommu=on iommu=pt"    # AMD
-        reboot
+      vm_nvme=true requires active IOMMU on the HYPERVISOR kernel, but no
+      /sys/kernel/iommu_groups entries were found. Host tuning should have
+      added the correct Intel/AMD IOMMU kernel arguments and rebooted; check
+      that VT-d/AMD-Vi is enabled in the hypervisor BIOS and that the
+      expected kernel was booted.
   when: nvme_iommu_groups.files | length == 0
 
 - name: Ensure the vfio-pci kernel module is loaded

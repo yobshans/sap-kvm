@@ -40,7 +40,7 @@
   </features>
 
   <!-- CPU: host-passthrough with explicit guest topology -->
-  <cpu mode='host-passthrough' check='none' migratable='on'>
+  <cpu mode='host-passthrough' check='none' migratable='off'>
     <topology sockets='{{ vm_sockets }}' dies='1' clusters='1' cores='{{ vm_cores_per_socket }}' threads='{{ vm_threads_per_core }}'/>
     <cache level='3' mode='emulate'/>
 {% for feat in vm_cpu_features %}
