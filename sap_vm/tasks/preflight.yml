@@ -8,6 +8,7 @@
     name:
       - qemu-kvm
       - libvirt
+      - nftables
       - python3
       - python3-libvirt
       - python3-lxml
@@ -101,62 +102,57 @@
       no bridge, which this role does not support.
   when: not (vm_network_bridge_iface | default('') | length > 0)
 
-# Older runs of this role could set vm_network_bridge_iface to a
-# stringified Python list (e.g. "['virbr0']") instead of "virbr0" -- clean
-# up that no-op rule before inserting the correct one.
-- name: Remove any stale malformed firewall rule from a previous buggy run (INPUT)
-  ansible.builtin.iptables:
-    chain: INPUT
-    in_interface: "['{{ vm_network_bridge_iface }}']"
-    jump: ACCEPT
-    state: absent
+# Manage the host firewall with nftables directly. Some RHEL 10 hosts use
+# nftables with a catch-all REJECT in INPUT/FORWARD; iptables compatibility
+# rules do not reliably interoperate with that ruleset across VM restarts.
+- name: Read the nftables INPUT chain
+  ansible.builtin.command:
+    cmd: nft list chain ip filter INPUT
+  register: _nft_input_chain
+  changed_when: false
   failed_when: false
 
-- name: Allow guest network traffic through the host firewall
-  ansible.builtin.iptables:
-    chain: INPUT
-    in_interface: "{{ vm_network_bridge_iface }}"
-    jump: ACCEPT
-    action: insert
-    rule_num: 1
-    comment: "sap_vm: allow DHCP/DNS from {{ vm_network }} ({{ vm_network_bridge_iface }}) to reach dnsmasq"
+- name: Allow guest DHCP and DNS through nftables
+  ansible.builtin.command:
+    cmd: >-
+      nft insert rule ip filter INPUT
+      iifname "{{ vm_network_bridge_iface }}"
+      udp dport { 53, 67 } accept
+  when: >-
+    'iifname "{{ vm_network_bridge_iface }}" udp dport { 53, 67 } accept'
+    not in (_nft_input_chain.stdout | default(''))
 
-# The same catch-all rule (or an equivalent one further down the chain) can
-# also sit in FORWARD, which is what NAT'd guest traffic to the outside
-# world (yum repos, HANA/HCMT downloads) actually traverses -- not INPUT.
-# Symptom: DHCP works, SSH into the guest works, but `dnf install` inside
-# the guest fails immediately with "Could not connect to server" for every
-# repo baseurl.
-#
-# Two rules are needed, not one: the bridge rule below only covers the
-# guest's initial outbound packet (iifname virbr0). The *reply* comes back
-# in via the physical NIC, not virbr0, so it needs its own accept -- unlike
-# INPUT on this host, FORWARD had no pre-existing ESTABLISHED,RELATED accept
-# rule at all, so without this the reply hits the same catch-all REJECT.
-- name: Remove any stale malformed firewall rule from a previous buggy run (FORWARD)
-  ansible.builtin.iptables:
-    chain: FORWARD
-    in_interface: "['{{ vm_network_bridge_iface }}']"
-    jump: ACCEPT
-    state: absent
+- name: Allow guest DNS over TCP through nftables
+  ansible.builtin.command:
+    cmd: >-
+      nft insert rule ip filter INPUT
+      iifname "{{ vm_network_bridge_iface }}"
+      tcp dport 53 accept
+  when: >-
+    'iifname "{{ vm_network_bridge_iface }}" tcp dport 53 accept'
+    not in (_nft_input_chain.stdout | default(''))
+
+- name: Read the nftables FORWARD chain
+  ansible.builtin.command:
+    cmd: nft list chain ip filter FORWARD
+  register: _nft_forward_chain
+  changed_when: false
   failed_when: false
 
-- name: Allow outbound guest network traffic through the host firewall
-  ansible.builtin.iptables:
-    chain: FORWARD
-    in_interface: "{{ vm_network_bridge_iface }}"
-    jump: ACCEPT
-    action: insert
-    rule_num: 1
-    comment: "sap_vm: allow outbound traffic from {{ vm_network }} ({{ vm_network_bridge_iface }}) to reach the internet/yum repos"
+- name: Allow established and related return traffic through nftables
+  ansible.builtin.command:
+    cmd: >-
+      nft insert rule ip filter FORWARD
+      ct state established,related accept
+  when: >-
+    'ct state established,related accept'
+    not in (_nft_forward_chain.stdout | default(''))
 
-- name: Allow established/related return traffic through FORWARD
-  ansible.builtin.iptables:
-    chain: FORWARD
-    ctstate:
-      - ESTABLISHED
-      - RELATED
-    jump: ACCEPT
-    action: insert
-    rule_num: 1
-    comment: "sap_vm: allow return traffic to {{ vm_network }} guests (reply arrives on the physical NIC, not the bridge)"
+- name: Allow outbound guest traffic through nftables
+  ansible.builtin.command:
+    cmd: >-
+      nft insert rule ip filter FORWARD
+      iifname "{{ vm_network_bridge_iface }}" accept
+  when: >-
+    'iifname "{{ vm_network_bridge_iface }}" accept'
+    not in (_nft_forward_chain.stdout | default(''))
