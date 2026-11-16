@@ -2,9 +2,11 @@
 
 A NoCloud cidata ISO is built with `community.libvirt.virt_volume`
 `create_cidata_cdrom` (Rock Ridge names `user-data` / `meta-data` /
-`network-config`). The network config explicitly enables DHCP on the guest’s
-RHEL 10 virtio interface, `enp1s0`, so a base image without default network
-configuration still requests a libvirt lease without renaming the interface.
+`network-config`). The network config enables DHCP on any guest ethernet
+NIC matching `e*` (`enp1s0`, `ens3`, `eth0`, …), so a base image without
+default network configuration still requests a libvirt lease even when the
+virtio interface name varies by PCI slot. (`virbr0` is the hypervisor
+bridge for the libvirt NAT network — it is not the guest NIC.)
 
 Cloud-init then applies:
 

@@ -1,5 +1,12 @@
 # Guest network / DHCP lease and outbound access
 
+Two different interfaces are involved:
+
+- **Host bridge** (usually `virbr0`): discovered from the libvirt network XML
+  and used only for host nftables rules below.
+- **Guest NIC** (dynamic name: `enp1s0`, `ens3`, `eth0`, …): configured for
+  DHCP by cloud-init `network-config` via `match: name: "e*"`, not hardcoded.
+
 `preflight.yml` ensures the libvirt network (`vm_network`, default
 `default`) is active, then reads its XML to find the real bridge device
 (e.g. `virbr0`) and inserts rules directly into the host’s nftables
