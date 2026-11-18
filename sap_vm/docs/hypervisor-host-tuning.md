@@ -84,7 +84,7 @@ These are applied **inside the guest** (not on the hypervisor):
 | Setting | Default | Why |
 |---|---|---|
 | `/sys/module/haltpoll/parameters/guest_halt_poll_ns` | `vm_guest_halt_poll_ns` (400000 = 400µs) | Raises the guest haltpoll busy-wait above the kernel default 200µs to cut vCPU wake-up latency for HANA latency-sensitive ops. Persisted in `/etc/modprobe.d/haltpoll-tuning.conf`. |
-| `transparent_hugepage=` + THP sysfs | `vm_guest_thp` (`never`) | SAP Note 2131662 recommends `never` because THP compaction causes latency spikes during large scans (Q67/Q51). Override with `-e vm_guest_thp=always` to A/B test. |
+| `transparent_hugepage=` + THP sysfs | `vm_guest_thp` (`madvise`) | `madvise` lets HANA use `madvise(MADV_HUGEPAGE)` without `always` compaction stalls (SAP Note 2131662) or `never` removing hugepages. Override with `-e vm_guest_thp=always\|never` to A/B test. |
 
 Guest THP is set on the guest kernel cmdline (cloud-init `bootcmd` +
 `post_boot.yml` `grubby`) and live via sysfs / `/etc/tmpfiles.d/sap-thp.conf`.

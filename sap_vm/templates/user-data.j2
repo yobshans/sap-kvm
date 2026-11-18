@@ -21,8 +21,9 @@ chpasswd:
       type: text
 
 bootcmd:
-  # SAP Note 2131662 recommends transparent_hugepage=never (THP compaction
-  # causes latency spikes during large scans). Override via vm_guest_thp.
+  # Default vm_guest_thp=madvise: HANA can madvise(MADV_HUGEPAGE) for its
+  # allocator without "always" surprise compaction (SAP Note 2131662) or
+  # "never" removing hugepages entirely.
   - grubby --update-kernel=ALL --remove-args="transparent_hugepage" --args="transparent_hugepage={{ vm_guest_thp }}"
   - [ sh, -c, "grep -qw transparent_hugepage={{ vm_guest_thp }} /proc/cmdline || reboot" ]
   # Guest haltpoll: raise wake-up busy-wait from the kernel default 200µs

@@ -96,10 +96,12 @@ vm_kvm_ple_gap: 0                    # disable Pause-Loop Exiting (spinning lock
 # kernel value is 200000 (200µs); 400000 (400µs) reduces vCPU wake-up
 # latency for HANA's latency-sensitive operations.
 vm_guest_halt_poll_ns: 400000
-# Guest transparent hugepage policy. SAP Note 2131662 recommends "never"
-# because THP compaction causes latency spikes during large scans
-# (Q67/Q51-style). Override with -e vm_guest_thp=always to A/B test.
-vm_guest_thp: never
+# Guest transparent hugepage policy. Use madvise (not always/never):
+# SAP Note 2131662 warns about THP compaction stalls from "always", but
+# "never" removes hugepages entirely. madvise lets HANA opt in via
+# madvise(MADV_HUGEPAGE) for its main allocator without surprise compaction.
+# Override with -e vm_guest_thp=always|never to A/B test.
+vm_guest_thp: madvise
 
 # Pre-fault all guest memory at VM start (<allocation mode='immediate'/> in
 # <memoryBacking>, vm-domain.xml.j2) instead of faulting pages in on first

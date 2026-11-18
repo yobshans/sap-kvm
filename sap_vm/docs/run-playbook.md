@@ -105,7 +105,7 @@ Useful extra-vars:
 | `vm_kvm_lapic_timer_advance_ns` | `1000` | `kvm` module `lapic_timer_advance_ns` (host-wide) |
 | `vm_kvm_ple_gap` | `0` | `kvm_intel` module `ple_gap` (host-wide; skipped on AMD) |
 | `vm_guest_halt_poll_ns` | `400000` | Guest `haltpoll` `guest_halt_poll_ns` (400µs; guest-side) |
-| `vm_guest_thp` | `never` | Guest `transparent_hugepage=` + THP sysfs (`never` per SAP Note 2131662; use `always` to A/B) |
+| `vm_guest_thp` | `madvise` | Guest `transparent_hugepage=` + THP sysfs (`madvise`: HANA opts in via MADV_HUGEPAGE; use `always`/`never` to A/B) |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `host_tuning`,
 `memory_cleanup`, `kvm_tuning`, `hugepages`, `disk`, `raw_convert`,

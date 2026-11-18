@@ -76,12 +76,14 @@ set `-e vm_memory_prefault=false` if an older libvirt rejects the
 `<allocation>` element.
 
 Inside the guest, the kernel command line includes
-`transparent_hugepage={{ vm_guest_thp }}` (default `never`, per SAP Note
-2131662 — THP compaction causes latency spikes during large scans). The
-live sysfs knobs (`/sys/kernel/mm/transparent_hugepage/enabled` and
+`transparent_hugepage={{ vm_guest_thp }}` (default `madvise`). SAP Note
+2131662 warns about compaction stalls from `always`, but `never` removes
+hugepages entirely — `madvise` lets HANA opt in via `madvise(MADV_HUGEPAGE)`
+for its main allocator without surprise compaction. The live sysfs knobs
+(`/sys/kernel/mm/transparent_hugepage/enabled` and
 `/sys/kernel/mm/transparent_hugepage/defrag`) match that policy and are
 persisted with `/etc/tmpfiles.d/sap-thp.conf`. Override with
-`-e vm_guest_thp=always` to A/B test.
+`-e vm_guest_thp=always|never` to A/B test.
 
 ## Disk
 

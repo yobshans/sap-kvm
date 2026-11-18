@@ -108,8 +108,8 @@
     ansible_host_key_checking: false
 
 - name: Set guest transparent hugepage policy on the kernel cmdline
-  # SAP Note 2131662 recommends never; vm_guest_thp defaults to never.
-  # Re-applies on existing guests (cloud-init bootcmd only runs first boot).
+  # Default vm_guest_thp=madvise (not always/never). Re-applies on existing
+  # guests (cloud-init bootcmd only runs first boot).
   ansible.builtin.command:
     cmd: >-
       grubby --update-kernel=ALL
