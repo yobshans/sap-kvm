@@ -72,7 +72,9 @@ vm_host_memory_cleanup: true
 # (exactly the host CPUs vm_cpu_pins dedicates to guest vCPUs -- see
 # templates/host_tuning.j2), a static default_hugepagesz=1G hugepagesz=1G
 # hugepages=N reservation sized from hugepages_per_node x hugepage_nodes,
-# and mitigations=off.
+# mitigations=off, and intel_idle.max_cstate=1 / processor.max_cstate=1
+# (cap idle C-states at C1 to avoid ~100µs deep-C-state wake-up latency
+# on isolated cores).
 # If they already match, it's a no-op. If not, it runs grubby and REBOOTS
 # THE HYPERVISOR (ansible.builtin.reboot, waits for it to come back) --
 # this takes down every OTHER VM on that hypervisor too, not just this
@@ -88,6 +90,16 @@ vm_host_reboot_timeout: 600
 vm_kvm_halt_poll_ns: 2000000         # vCPU busy-waits longer before halting
 vm_kvm_lapic_timer_advance_ns: 1000  # compensates for VMEXIT latency on lapic timer delivery
 vm_kvm_ple_gap: 0                    # disable Pause-Loop Exiting (spinning locks cause unnecessary VMEXITs under PLE)
+
+# --- Guest-side latency tunables (tasks/post_boot.yml + cloud-init) ---
+# haltpoll module inside the guest (NOT host kvm.halt_poll_ns). Default
+# kernel value is 200000 (200µs); 400000 (400µs) reduces vCPU wake-up
+# latency for HANA's latency-sensitive operations.
+vm_guest_halt_poll_ns: 400000
+# Guest transparent hugepage policy. SAP Note 2131662 recommends "never"
+# because THP compaction causes latency spikes during large scans
+# (Q67/Q51-style). Override with -e vm_guest_thp=always to A/B test.
+vm_guest_thp: never
 
 # Pre-fault all guest memory at VM start (<allocation mode='immediate'/> in
 # <memoryBacking>, vm-domain.xml.j2) instead of faulting pages in on first

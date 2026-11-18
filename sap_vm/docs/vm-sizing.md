@@ -76,11 +76,12 @@ set `-e vm_memory_prefault=false` if an older libvirt rejects the
 `<allocation>` element.
 
 Inside the guest, the kernel command line includes
-`transparent_hugepage=always` so transparent hugepages are enabled before
-tuned starts. The live sysfs knobs
-(`/sys/kernel/mm/transparent_hugepage/enabled` and
-`/sys/kernel/mm/transparent_hugepage/defrag`) are also set to `always` and
-persisted with `/etc/tmpfiles.d/sap-thp.conf`.
+`transparent_hugepage={{ vm_guest_thp }}` (default `never`, per SAP Note
+2131662 — THP compaction causes latency spikes during large scans). The
+live sysfs knobs (`/sys/kernel/mm/transparent_hugepage/enabled` and
+`/sys/kernel/mm/transparent_hugepage/defrag`) match that policy and are
+persisted with `/etc/tmpfiles.d/sap-thp.conf`. Override with
+`-e vm_guest_thp=always` to A/B test.
 
 ## Disk
 

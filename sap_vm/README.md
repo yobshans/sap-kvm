@@ -16,7 +16,8 @@ the **`hypervisor`** inventory group (this machine or a remote hypervisor).
 - [How VM size is calculated](docs/vm-sizing.md) — CPU, NUMA, memory,
   hugepages, disks, NVMe passthrough, and clock configuration.
 - [Hypervisor host tuning](docs/hypervisor-host-tuning.md) — CPU isolation,
-  static hugepages, CPU mitigations, and KVM module tuning.
+  static hugepages, C1 C-states, CPU mitigations, KVM module tuning, and
+  guest haltpoll / THP latency knobs.
 
 ### Guest configuration
 

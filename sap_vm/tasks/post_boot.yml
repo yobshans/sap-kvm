@@ -107,10 +107,28 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
-- name: Enable transparent hugepages on the guest
+- name: Set guest transparent hugepage policy on the kernel cmdline
+  # SAP Note 2131662 recommends never; vm_guest_thp defaults to never.
+  # Re-applies on existing guests (cloud-init bootcmd only runs first boot).
+  ansible.builtin.command:
+    cmd: >-
+      grubby --update-kernel=ALL
+      --remove-args="transparent_hugepage"
+      --args="transparent_hugepage={{ vm_guest_thp }}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Apply transparent hugepage policy live on the guest
   ansible.builtin.copy:
     dest: /sys/kernel/mm/transparent_hugepage/enabled
-    content: "always\n"
+    content: "{{ vm_guest_thp }}\n"
     unsafe_writes: true
   delegate_to: "{{ vm_name }}_guest"
   become: false
@@ -122,10 +140,10 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
-- name: Enable transparent hugepage defrag on the guest
+- name: Apply transparent hugepage defrag policy live on the guest
   ansible.builtin.copy:
     dest: /sys/kernel/mm/transparent_hugepage/defrag
-    content: "always\n"
+    content: "{{ vm_guest_thp }}\n"
     unsafe_writes: true
   delegate_to: "{{ vm_name }}_guest"
   become: false
@@ -141,11 +159,73 @@
   ansible.builtin.copy:
     dest: /etc/tmpfiles.d/sap-thp.conf
     content: |
-      w /sys/kernel/mm/transparent_hugepage/enabled - - - - always
-      w /sys/kernel/mm/transparent_hugepage/defrag - - - - always
+      w /sys/kernel/mm/transparent_hugepage/enabled - - - - {{ vm_guest_thp }}
+      w /sys/kernel/mm/transparent_hugepage/defrag - - - - {{ vm_guest_thp }}
     mode: "0644"
   delegate_to: "{{ vm_name }}_guest"
   become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Ensure the guest haltpoll module is loaded
+  community.general.modprobe:
+    name: haltpoll
+    state: present
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  failed_when: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Check whether guest_halt_poll_ns is available
+  ansible.builtin.stat:
+    path: /sys/module/haltpoll/parameters/guest_halt_poll_ns
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_halt_poll_ns_param
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Raise guest_halt_poll_ns (reduces vCPU wake-up latency)
+  ansible.builtin.copy:
+    dest: /sys/module/haltpoll/parameters/guest_halt_poll_ns
+    content: "{{ vm_guest_halt_poll_ns }}"
+    unsafe_writes: true
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_halt_poll_ns_param.stat.exists
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Persist guest_halt_poll_ns across guest reboot/module reload
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/haltpoll-tuning.conf
+    content: |
+      options haltpoll guest_halt_poll_ns={{ vm_guest_halt_poll_ns }}
+    mode: "0644"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_halt_poll_ns_param.stat.exists
   vars:
     ansible_user: root
     ansible_password: "{{ vm_root_password }}"

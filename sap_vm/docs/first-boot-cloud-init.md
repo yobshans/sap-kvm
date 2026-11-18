@@ -22,9 +22,10 @@ Cloud-init then applies:
 
 Password SSH is required; the role does not inject SSH keys. Recreate with
 `-e destroy_existing_vm=true` when user-data changes, because cloud-init
-user-data runs on first boot only. `libxcrypt-compat`, THP=always, and SELinux
-permissive are also applied over SSH after boot so an existing guest still
-gets them.
+user-data runs on first boot only. `libxcrypt-compat`, THP
+(`vm_guest_thp`, default `never`), guest `haltpoll` (`vm_guest_halt_poll_ns`,
+default `400000`), and SELinux permissive are also applied over SSH after
+boot so an existing guest still gets them.
 
 `post_boot.yml` waits up to `cloud_init_boot_timeout` (default 1800s) for
 `/var/lib/cloud/instance/boot-finished` before continuing. cloud-init is

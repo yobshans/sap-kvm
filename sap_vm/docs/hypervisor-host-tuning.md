@@ -11,7 +11,7 @@
 > `vm_vcpus` override), but **do not run this role against a shared or
 > production hypervisor without accounting for that.**
 
-## CPU isolation + static hugepages + disabled CPU mitigations (`tasks/host_tuning.yml`)
+## CPU isolation + static hugepages + C1 C-states + disabled CPU mitigations (`tasks/host_tuning.yml`)
 
 After topology discovery (`vm_cpu_pins`, `hugepages_per_node`,
 `hugepage_nodes`) but before `hugepages.yml`'s runtime reservation,
@@ -27,6 +27,9 @@ After topology discovery (`vm_cpu_pins`, `hugepages_per_node`,
   `hugepages_per_node × hugepage_nodes` (the same total `hugepages.yml`
   already computes/verifies at runtime), more reliable than runtime
   reservation on a host whose memory is already fragmented.
+- `intel_idle.max_cstate=1` / `processor.max_cstate=1` — cap host idle
+  C-states at C1 so isolated cores do not pay ~100µs deep-C-state wake-up
+  latency per vCPU exit.
 - `mitigations=off` — disables CPU vulnerability mitigations on the
   hypervisor for benchmark throughput.
 
@@ -34,8 +37,8 @@ Example (2 sockets × 40 cores × SMT-2, 1 reserved core/node at CPU 0/40):
 
 ```bash
 grubby --update-kernel=ALL \
-  --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz mitigations" \
-  --args="default_hugepagesz=1G hugepagesz=1G hugepages=280 isolcpus=1-39,41-79 nohz_full=1-39,41-79 rcu_nocbs=1-39,41-79 mitigations=off"
+  --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz mitigations intel_idle.max_cstate processor.max_cstate" \
+  --args="default_hugepagesz=1G hugepagesz=1G hugepages=280 isolcpus=1-39,41-79 nohz_full=1-39,41-79 rcu_nocbs=1-39,41-79 mitigations=off intel_idle.max_cstate=1 processor.max_cstate=1"
 ```
 
 This is compared against `ansible_cmdline` (the currently **booted**
@@ -73,3 +76,15 @@ module reload/reboot. `ple_gap` is Intel-specific (Pause-Loop Exiting); on
 an AMD host (no `kvm_intel` module) that one tunable is skipped — not
 failed — with a note in the output. AMD's equivalent Pause Filter tuning
 is not currently handled by this role.
+
+## Guest-side latency tunables (`tasks/post_boot.yml` + cloud-init)
+
+These are applied **inside the guest** (not on the hypervisor):
+
+| Setting | Default | Why |
+|---|---|---|
+| `/sys/module/haltpoll/parameters/guest_halt_poll_ns` | `vm_guest_halt_poll_ns` (400000 = 400µs) | Raises the guest haltpoll busy-wait above the kernel default 200µs to cut vCPU wake-up latency for HANA latency-sensitive ops. Persisted in `/etc/modprobe.d/haltpoll-tuning.conf`. |
+| `transparent_hugepage=` + THP sysfs | `vm_guest_thp` (`never`) | SAP Note 2131662 recommends `never` because THP compaction causes latency spikes during large scans (Q67/Q51). Override with `-e vm_guest_thp=always` to A/B test. |
+
+Guest THP is set on the guest kernel cmdline (cloud-init `bootcmd` +
+`post_boot.yml` `grubby`) and live via sysfs / `/etc/tmpfiles.d/sap-thp.conf`.
