@@ -20,6 +20,15 @@ chpasswd:
       password: "{{ vm_root_password }}"
       type: text
 
+bootcmd:
+  # SAP Note 2131662 recommends transparent_hugepage=never (THP compaction
+  # causes latency spikes during large scans). Override via vm_guest_thp.
+  - grubby --update-kernel=ALL --remove-args="transparent_hugepage" --args="transparent_hugepage={{ vm_guest_thp }}"
+  - [ sh, -c, "grep -qw transparent_hugepage={{ vm_guest_thp }} /proc/cmdline || reboot" ]
+  # Guest haltpoll: raise wake-up busy-wait from the kernel default 200µs
+  # to vm_guest_halt_poll_ns (default 400µs) for HANA latency-sensitive ops.
+  - [ sh, -c, "modprobe haltpoll 2>/dev/null || true; echo {{ vm_guest_halt_poll_ns }} > /sys/module/haltpoll/parameters/guest_halt_poll_ns 2>/dev/null || true" ]
+
 write_files:
   - path: /etc/ssh/sshd_config.d/00-sap.conf
     permissions: "0644"
@@ -30,7 +39,12 @@ write_files:
   - path: /etc/tmpfiles.d/sap-thp.conf
     permissions: "0644"
     content: |
-      w /sys/kernel/mm/transparent_hugepage/enabled - - - - never
+      w /sys/kernel/mm/transparent_hugepage/enabled - - - - {{ vm_guest_thp }}
+      w /sys/kernel/mm/transparent_hugepage/defrag - - - - {{ vm_guest_thp }}
+  - path: /etc/modprobe.d/haltpoll-tuning.conf
+    permissions: "0644"
+    content: |
+      options haltpoll guest_halt_poll_ns={{ vm_guest_halt_poll_ns }}
 
 yum_repos:
 {% for repo in vm_repos %}

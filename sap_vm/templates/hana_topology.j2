@@ -85,9 +85,15 @@
 {% endif %}
 {% for node_cores in acc.guest_cores %}
 {% for sibs in node_cores[:cores_per_socket] %}
-{% set cpuset = format_cpuset(sibs) %}
+{% set sibs_sorted = sibs | sort %}
 {% for _thread in range(host_threads) %}
-{% set acc.pins = acc.pins + [{'vcpu': acc.vcpu, 'cpuset': cpuset}] %}
+{# Strict 1:1 pin: each guest vCPU gets exactly ONE host SMT thread, not
+   the whole sibling pair -- avoids the host scheduler bouncing a vCPU
+   between its own two SMT siblings, which hurts cache locality and jitter
+   for CPU-pinned benchmarks (e.g. SAP PBO/HCMT). Falls back to the last
+   sibling if a core somehow has fewer threads than host_threads. #}
+{% set host_cpu = sibs_sorted[_thread] if _thread < (sibs_sorted | length) else sibs_sorted[-1] %}
+{% set acc.pins = acc.pins + [{'vcpu': acc.vcpu, 'cpuset': host_cpu | string}] %}
 {% set acc.vcpu = acc.vcpu + 1 %}
 {% endfor %}
 {% endfor %}
