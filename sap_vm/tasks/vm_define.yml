@@ -177,16 +177,17 @@
   ansible.builtin.fail:
     msg: >-
       {{ vm_name }} is running but never leased an IP on the '{{ vm_network }}'
-      network after 120s. The VM itself is up (see "Display VM info" above), so
-      this is almost always a guest-side networking/cloud-init problem, not a
-      libvirt one. On the hypervisor, check:
+      network after 120s. The VM itself is up (see "Display VM info" above).
+      Most common causes:
+        1. Host nftables INPUT catch-all REJECT shadowing dnsmasq on the
+           libvirt bridge (guest NIC UP, no address, empty leases) — see
+           docs/guest-network.md and preflight.yml.
+        2. Guest still early-booting / cloud-init NoCloud not applied.
+      On the hypervisor, check:
         virsh net-dhcp-leases {{ vm_network }}
         virsh domiflist {{ vm_name }}
-        virsh console {{ vm_name }}   # watch for a boot hang (dracut, GRUB,
-                                     # "no bootable device", cloud-init NoCloud
-                                     # datasource not found, etc.)
-      A running domain with zero leases almost always means the guest OS
-      never got past early boot, so DHCP was never requested.
+        nft list chain ip filter INPUT
+        virsh console {{ vm_name }}
   when: not ((vm_ifs | to_json) is search('192\\.168\\.'))
 
 - name: Set VM IP fact
