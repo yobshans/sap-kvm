@@ -102,6 +102,12 @@ vm_guest_halt_poll_ns: 400000
 # madvise(MADV_HUGEPAGE) for its main allocator without surprise compaction.
 # Override with -e vm_guest_thp=always|never to A/B test.
 vm_guest_thp: madvise
+# Guest kernel cmdline also sets mitigations=off and
+# intel_idle.max_cstate=1 / processor.max_cstate=1 (same rationale as
+# hypervisor host_tuning). Applied via cloud-init bootcmd + post_boot
+# grubby; post_boot reboots the guest when /proc/cmdline does not yet
+# match. Seconds to wait for the guest to come back after that reboot:
+vm_guest_reboot_timeout: 600
 
 # Pre-fault all guest memory at VM start (<allocation mode='immediate'/> in
 # <memoryBacking>, vm-domain.xml.j2) instead of faulting pages in on first

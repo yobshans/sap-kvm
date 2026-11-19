@@ -21,11 +21,15 @@ chpasswd:
       type: text
 
 bootcmd:
-  # Default vm_guest_thp=madvise: HANA can madvise(MADV_HUGEPAGE) for its
-  # allocator without "always" surprise compaction (SAP Note 2131662) or
-  # "never" removing hugepages entirely.
-  - grubby --update-kernel=ALL --remove-args="transparent_hugepage" --args="transparent_hugepage={{ vm_guest_thp }}"
-  - [ sh, -c, "grep -qw transparent_hugepage={{ vm_guest_thp }} /proc/cmdline || reboot" ]
+  # Guest latency cmdline (mirrors hypervisor host_tuning where useful):
+  # - transparent_hugepage={{ vm_guest_thp }} (default madvise): HANA can
+  #   madvise(MADV_HUGEPAGE) without "always" compaction stalls (SAP Note
+  #   2131662) or "never" removing hugepages entirely.
+  # - mitigations=off: disable Spectre/MDS/etc. for benchmark throughput.
+  # - intel_idle.max_cstate=1 processor.max_cstate=1: cap idle at C1 to
+  #   avoid deep-C-state wake-up latency.
+  - grubby --update-kernel=ALL --remove-args="transparent_hugepage mitigations intel_idle.max_cstate processor.max_cstate" --args="transparent_hugepage={{ vm_guest_thp }} mitigations=off intel_idle.max_cstate=1 processor.max_cstate=1"
+  - [ sh, -c, "grep -qw transparent_hugepage={{ vm_guest_thp }} /proc/cmdline && grep -qw mitigations=off /proc/cmdline && grep -qw intel_idle.max_cstate=1 /proc/cmdline && grep -qw processor.max_cstate=1 /proc/cmdline || reboot" ]
   # Guest haltpoll: raise wake-up busy-wait from the kernel default 200µs
   # to vm_guest_halt_poll_ns (default 400µs) for HANA latency-sensitive ops.
   - [ sh, -c, "modprobe haltpoll 2>/dev/null || true; echo {{ vm_guest_halt_poll_ns }} > /sys/module/haltpoll/parameters/guest_halt_poll_ns 2>/dev/null || true" ]

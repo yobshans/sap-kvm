@@ -106,6 +106,7 @@ Useful extra-vars:
 | `vm_kvm_ple_gap` | `0` | `kvm_intel` module `ple_gap` (host-wide; skipped on AMD) |
 | `vm_guest_halt_poll_ns` | `400000` | Guest `haltpoll` `guest_halt_poll_ns` (400µs; guest-side) |
 | `vm_guest_thp` | `madvise` | Guest `transparent_hugepage=` + THP sysfs (`madvise`: HANA opts in via MADV_HUGEPAGE; use `always`/`never` to A/B) |
+| `vm_guest_reboot_timeout` | `600` | Seconds to wait after `post_boot.yml` reboots the guest for `mitigations=off` / C1 C-state cmdline |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `host_tuning`,
 `memory_cleanup`, `kvm_tuning`, `hugepages`, `disk`, `raw_convert`,

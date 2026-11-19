@@ -107,16 +107,53 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
-- name: Set guest transparent hugepage policy on the kernel cmdline
-  # Default vm_guest_thp=madvise (not always/never). Re-applies on existing
-  # guests (cloud-init bootcmd only runs first boot).
+- name: Set guest latency args on the kernel cmdline
+  # THP (default madvise), mitigations=off, and C1 C-state cap. Re-applies
+  # on existing guests (cloud-init bootcmd only runs first boot). Mitigations
+  # and C-state limits only take effect after reboot — see next tasks.
   ansible.builtin.command:
     cmd: >-
       grubby --update-kernel=ALL
-      --remove-args="transparent_hugepage"
-      --args="transparent_hugepage={{ vm_guest_thp }}"
+      --remove-args="transparent_hugepage mitigations intel_idle.max_cstate processor.max_cstate"
+      --args="transparent_hugepage={{ vm_guest_thp }} mitigations=off intel_idle.max_cstate=1 processor.max_cstate=1"
   delegate_to: "{{ vm_name }}_guest"
   become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Check whether the guest kernel cmdline already has latency args
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      grep -qw transparent_hugepage={{ vm_guest_thp }} /proc/cmdline &&
+      grep -qw mitigations=off /proc/cmdline &&
+      grep -qw intel_idle.max_cstate=1 /proc/cmdline &&
+      grep -qw processor.max_cstate=1 /proc/cmdline
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_latency_cmdline
+  changed_when: false
+  failed_when: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Reboot the guest to apply mitigations=off and C1 C-state cmdline args
+  ansible.builtin.reboot:
+    msg: "Rebooting guest for sap_vm latency cmdline (mitigations=off / C1 C-states / THP)"
+    reboot_timeout: "{{ vm_guest_reboot_timeout | int }}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_latency_cmdline.rc != 0
   vars:
     ansible_user: root
     ansible_password: "{{ vm_root_password }}"

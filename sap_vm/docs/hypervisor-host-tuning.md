@@ -85,6 +85,11 @@ These are applied **inside the guest** (not on the hypervisor):
 |---|---|---|
 | `/sys/module/haltpoll/parameters/guest_halt_poll_ns` | `vm_guest_halt_poll_ns` (400000 = 400µs) | Raises the guest haltpoll busy-wait above the kernel default 200µs to cut vCPU wake-up latency for HANA latency-sensitive ops. Persisted in `/etc/modprobe.d/haltpoll-tuning.conf`. |
 | `transparent_hugepage=` + THP sysfs | `vm_guest_thp` (`madvise`) | `madvise` lets HANA use `madvise(MADV_HUGEPAGE)` without `always` compaction stalls (SAP Note 2131662) or `never` removing hugepages. Override with `-e vm_guest_thp=always\|never` to A/B test. |
+| `mitigations=off` | hardcoded | Same as hypervisor: disable Spectre/MDS/etc. for benchmark throughput (security-relevant). |
+| `intel_idle.max_cstate=1` / `processor.max_cstate=1` | hardcoded | Cap guest idle at C1 to avoid deep-C-state wake-up latency. |
 
-Guest THP is set on the guest kernel cmdline (cloud-init `bootcmd` +
-`post_boot.yml` `grubby`) and live via sysfs / `/etc/tmpfiles.d/sap-thp.conf`.
+Guest kernel cmdline args (`transparent_hugepage=`, `mitigations=off`,
+C1 C-states) are set via cloud-init `bootcmd` + `post_boot.yml` `grubby`.
+`post_boot.yml` reboots the guest when `/proc/cmdline` does not yet match
+(`vm_guest_reboot_timeout`, default 600s). THP is also applied live via
+sysfs / `/etc/tmpfiles.d/sap-thp.conf`.
