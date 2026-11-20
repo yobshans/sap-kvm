@@ -73,5 +73,9 @@ runcmd:
   - systemctl enable --now sshd
   - systemctl reload sshd || systemctl restart sshd || true
   - systemctl enable --now qemu-guest-agent || true
+  # Guest IRQs stay on the vCPU the device is bound to; irqbalance moving
+  # them across vCPUs adds latency noise for HANA/PBO.
+  - systemctl stop irqbalance || true
+  - systemctl disable irqbalance || true
   - growpart /dev/vda 4 || true
   - xfs_growfs / || resize2fs /dev/vda4 || true

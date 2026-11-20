@@ -271,6 +271,25 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
+- name: Disable irqbalance on the guest
+  # Keep device IRQs on their bound vCPU; irqbalance rebalancing across
+  # vCPUs adds latency noise for HANA/PBO. Re-applies on existing guests
+  # (cloud-init runcmd only runs first boot).
+  ansible.builtin.systemd:
+    name: irqbalance
+    state: stopped
+    enabled: false
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  failed_when: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
 - name: Set SELinux permissive on the guest
   ansible.builtin.copy:
     dest: /sys/fs/selinux/enforce

@@ -23,7 +23,7 @@
   ansible.builtin.include_tasks: hugepages_margin.yml
   tags: [always, hugepages]
 
-- name: Include hypervisor host tuning (CPU isolation + static hugepages + C1 C-states + mitigations=off; may reboot the hypervisor)
+- name: Include hypervisor host tuning (CPU isolation + static hugepages + C1 C-states + mitigations=off + PLE + irqbalance ban; may reboot the hypervisor)
   ansible.builtin.include_tasks: host_tuning.yml
   tags: [host_tuning]
 

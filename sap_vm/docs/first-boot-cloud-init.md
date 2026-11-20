@@ -25,10 +25,10 @@ Password SSH is required; the role does not inject SSH keys. Recreate with
 user-data runs on first boot only. `libxcrypt-compat`, guest latency cmdline
 (`transparent_hugepage={{ vm_guest_thp }}`, `mitigations=off`,
 `intel_idle.max_cstate=1`, `processor.max_cstate=1`), guest `haltpoll`
-(`vm_guest_halt_poll_ns`, default `400000`), and SELinux permissive are
-also applied over SSH after boot so an existing guest still gets them
-(`post_boot.yml` reboots the guest when the latency cmdline is not yet
-active).
+(`vm_guest_halt_poll_ns`, default `400000`), disabled `irqbalance`, and
+SELinux permissive are also applied over SSH after boot so an existing
+guest still gets them (`post_boot.yml` reboots the guest when the latency
+cmdline is not yet active).
 
 `post_boot.yml` waits up to `cloud_init_boot_timeout` (default 1800s) for
 `/var/lib/cloud/instance/boot-finished` before continuing. cloud-init is
