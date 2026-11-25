@@ -8,9 +8,9 @@ Two different interfaces are involved:
   DHCP by cloud-init `network-config` via `match: name: "e*"`, not hardcoded.
 
 `preflight.yml` ensures the libvirt network (`vm_network`, default
-`default`) is active, then reads its XML to find the real bridge device
-(e.g. `virbr0`) and inserts rules directly into the host’s nftables
-`ip filter INPUT` and `ip filter FORWARD` chains:
+`default`) is active, then `guest_bridge_firewall.yml` reads its XML to
+find the real bridge device (e.g. `virbr0`) and inserts rules directly
+into the host’s nftables `ip filter INPUT` and `ip filter FORWARD` chains:
 
 - `iifname "<bridge>" udp dport { 53, 67 } accept`
 - `iifname "<bridge>" tcp dport 53 accept`
@@ -18,9 +18,13 @@ Two different interfaces are involved:
 - `iifname "<bridge>" accept`
 
 These rules are reapplied and **verified** on every run (the playbook fails
-if the bridge still isn’t accepted after insert), so they also recover from
-a host reboot or firewall reload. They are not persisted outside Ansible —
-a later `firewall-cmd --reload` / iptables restore can wipe them again.
+if the bridge still isn’t accepted after insert). They are **not**
+persisted outside Ansible — a hypervisor reboot (`host_tuning.yml`) or
+`firewall-cmd --reload` / iptables restore wipes them. Because
+`host_tuning.yml` can reboot after the preflight insert, `main.yml`
+runs `guest_bridge_firewall.yml` again **after** host tuning and before
+the VM is defined, so DHCP is not left blocked by a catch-all INPUT
+`REJECT`.
 
 Some hosts have a host firewall with a catch-all `REJECT` at the end of
 `INPUT` and/or `FORWARD` that pre-dates the libvirt network, even though

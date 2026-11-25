@@ -181,7 +181,8 @@
       Most common causes:
         1. Host nftables INPUT catch-all REJECT shadowing dnsmasq on the
            libvirt bridge (guest NIC UP, no address, empty leases) — see
-           docs/guest-network.md and preflight.yml.
+           docs/guest-network.md and guest_bridge_firewall.yml. Often
+           follows a host_tuning reboot that wiped ephemeral nft rules.
         2. Guest still early-booting / cloud-init NoCloud not applied.
       On the hypervisor, check:
         virsh net-dhcp-leases {{ vm_network }}
