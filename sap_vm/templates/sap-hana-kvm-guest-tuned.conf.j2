@@ -1,0 +1,37 @@
+#
+# tuned configuration — sap-hana-kvm-guest
+# Installed by sap_vm post_boot (not community.sap_infrastructure).
+# Aligned with sap_vm guest latency defaults: THP={{ vm_guest_thp }},
+# guest_halt_poll_ns={{ vm_guest_halt_poll_ns }}.
+#
+[main]
+summary=Optimize for running SAP HANA on KVM inside a virtual guest
+
+[cpu]
+force_latency=70
+governor=performance
+energy_perf_bias=performance
+min_perf_pct=100
+
+[vm]
+transparent_hugepages={{ vm_guest_thp }}
+
+[haltpoll]
+type=script
+script=${i:PROFILE_DIR}/haltpoll.sh
+
+[sysfs]
+/sys/devices/system/clocksource/clocksource0/current_clocksource=tsc
+/sys/module/haltpoll/parameters/guest_halt_poll_ns={{ vm_guest_halt_poll_ns }}
+/sys/module/haltpoll/parameters/guest_halt_poll_grow_start={{ vm_guest_halt_poll_ns }}
+
+[sysctl]
+kernel.sem = 32000 1024000000 500 32000
+kernel.numa_balancing = 0
+kernel.sched_latency_ns = 12000000
+kernel.sched_migration_cost_ns = 500000
+kernel.sched_min_granularity_ns = 12000000
+kernel.sched_wakeup_granularity_ns = 15000000
+vm.dirty_ratio = 40
+vm.dirty_background_ratio = 10
+vm.swappiness = 10

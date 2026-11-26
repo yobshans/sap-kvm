@@ -9,6 +9,14 @@
 # existing repo files at compose_url (vm_update_repos, same repo `name`s as
 # vm_repos so this overwrites them in place) and run `dnf update` to pull in
 # the newer packages/errata.
+#
+# A kernel update only takes effect after reboot. dnf/kernel-install usually
+# makes the newest kernel the default boot entry, but that is not guaranteed
+# (and the running kernel is still the old one until reboot). After dnf
+# update we: re-apply latency cmdline to ALL boot entries (so a brand-new
+# kernel gets mitigations=off / C1 / THP), force the newest installed
+# kernel-core as grubby default, and reboot when uname -r is not that
+# newest kernel.
 # ============================================================================
 
 - name: Show repo update plan
@@ -59,3 +67,117 @@
 - name: Show dnf update result
   ansible.builtin.debug:
     msg: "dnf update on the guest: {{ 'changed, packages updated' if guest_dnf_update.changed else 'already up to date' }}"
+
+# New kernel RPMs installed by dnf update do not inherit post_boot's earlier
+# grubby --update-kernel=ALL pass. Re-apply latency args to every entry,
+# including the just-installed kernel, before selecting it as default.
+- name: Re-apply guest latency cmdline to all kernels after package update
+  ansible.builtin.command:
+    cmd: >-
+      grubby --update-kernel=ALL
+      --remove-args="transparent_hugepage mitigations intel_idle.max_cstate processor.max_cstate cpuidle_haltpoll.force"
+      --args="transparent_hugepage={{ vm_guest_thp }} mitigations=off intel_idle.max_cstate=1 processor.max_cstate=1 cpuidle_haltpoll.force=1"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Discover running vs newest installed guest kernel
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      running="$(uname -r)"
+      newest="$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core 2>/dev/null | sort -V | tail -1 || true)"
+      if [[ -z "${newest}" ]]; then
+          newest="$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel 2>/dev/null | sort -V | tail -1 || true)"
+      fi
+      if [[ -z "${newest}" ]]; then
+          echo "No kernel-core/kernel RPM found" >&2
+          exit 1
+      fi
+      vmlinuz="/boot/vmlinuz-${newest}"
+      if [[ ! -e "${vmlinuz}" ]]; then
+          echo "Newest kernel RPM is ${newest} but ${vmlinuz} is missing" >&2
+          exit 1
+      fi
+      default_path="$(grubby --default-kernel 2>/dev/null || true)"
+      default_ver=""
+      if [[ -n "${default_path}" ]]; then
+          default_ver="$(basename "${default_path}" | sed 's/^vmlinuz-//')"
+      fi
+      python3 -c 'import json,sys; print(json.dumps({"running":sys.argv[1],"newest":sys.argv[2],"default":sys.argv[3],"vmlinuz":sys.argv[4]}))' \
+        "${running}" "${newest}" "${default_ver}" "${vmlinuz}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_kernel_versions
+  changed_when: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Parse guest kernel version facts
+  ansible.builtin.set_fact:
+    guest_kernel_info: "{{ guest_kernel_versions.stdout | from_json }}"
+
+- name: Show guest kernel boot selection
+  ansible.builtin.debug:
+    msg: >-
+      Guest kernels: running={{ guest_kernel_info.running }},
+      newest installed={{ guest_kernel_info.newest }},
+      grubby default={{ guest_kernel_info.default | default('(unset)', true) }}
+
+- name: Set newest installed kernel as the guest default boot entry
+  ansible.builtin.command:
+    cmd: "grubby --set-default {{ guest_kernel_info.vmlinuz }}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_kernel_info.default != guest_kernel_info.newest
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Reboot the guest onto the newest installed kernel
+  ansible.builtin.reboot:
+    msg: "Rebooting guest to activate kernel {{ guest_kernel_info.newest }} (was {{ guest_kernel_info.running }})"
+    reboot_timeout: "{{ vm_guest_reboot_timeout | int }}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_kernel_info.running != guest_kernel_info.newest
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Verify the guest is running the newest installed kernel
+  ansible.builtin.command:
+    cmd: uname -r
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_kernel_after_reboot
+  changed_when: false
+  failed_when: guest_kernel_after_reboot.stdout != guest_kernel_info.newest
+  when: guest_kernel_info.running != guest_kernel_info.newest
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false

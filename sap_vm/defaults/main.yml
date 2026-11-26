@@ -105,12 +105,19 @@ vm_guest_halt_poll_ns: 400000
 # madvise(MADV_HUGEPAGE) for its main allocator without surprise compaction.
 # Override with -e vm_guest_thp=always|never to A/B test.
 vm_guest_thp: madvise
-# Guest kernel cmdline also sets mitigations=off and
+# Guest kernel cmdline also sets mitigations=off,
 # intel_idle.max_cstate=1 / processor.max_cstate=1 (same rationale as
-# hypervisor host_tuning). Applied via cloud-init bootcmd + post_boot
-# grubby; post_boot reboots the guest when /proc/cmdline does not yet
-# match. Seconds to wait for the guest to come back after that reboot:
+# hypervisor host_tuning), and cpuidle_haltpoll.force=1 (force haltpoll
+# idle governor). Applied via cloud-init bootcmd + post_boot / repo_update
+# grubby; guest reboots when /proc/cmdline does not yet match (or when a
+# newer kernel must be activated). Seconds to wait for the guest to come
+# back after that reboot:
 vm_guest_reboot_timeout: 600
+# Guest tuned profile (post_boot.yml). Creates/activates sap-hana-kvm-guest
+# (HANA-on-KVM guest tuning, aligned with vm_guest_thp / vm_guest_halt_poll_ns).
+# Set empty string to skip. Note: sap-benchmark install_sap_hana's
+# sap_hana_preconfigure may later switch the guest to profile "sap-hana".
+vm_guest_tuned_profile: sap-hana-kvm-guest
 
 # Pre-fault all guest memory at VM start (<allocation mode='immediate'/> in
 # <memoryBacking>, vm-domain.xml.j2) instead of faulting pages in on first
@@ -319,6 +326,9 @@ cloud_init_boot_timeout: 1800
 # (tasks/repo_update.yml's vm_update_repos) and run `dnf update` so it picks
 # up newer packages/errata without re-baking a new guest image. Set to
 # false to leave the guest pinned to guest_image_compose_url's packages.
+# When dnf installs a newer kernel-core, repo_update also sets it as the
+# grubby default and reboots the guest (vm_guest_reboot_timeout) so uname
+# matches the updates compose.
 guest_update_packages: true
 # dnf update on 5 real repos can run long depending on how much has drifted
 # since guest_image_compose_url; polled via async so the play doesn't block

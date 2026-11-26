@@ -96,12 +96,17 @@ These are applied **inside the guest** (not on the hypervisor):
 | `transparent_hugepage=` + THP sysfs | `vm_guest_thp` (`madvise`) | `madvise` lets HANA use `madvise(MADV_HUGEPAGE)` without `always` compaction stalls (SAP Note 2131662) or `never` removing hugepages. Override with `-e vm_guest_thp=always\|never` to A/B test. |
 | `mitigations=off` | hardcoded | Same as hypervisor: disable Spectre/MDS/etc. for benchmark throughput (security-relevant). |
 | `intel_idle.max_cstate=1` / `processor.max_cstate=1` | hardcoded | Cap guest idle at C1 to avoid deep-C-state wake-up latency. |
+| `cpuidle_haltpoll.force=1` | hardcoded | Force the haltpoll idle governor (pairs with `guest_halt_poll_ns`). |
 | `irqbalance` stopped + disabled | hardcoded | Keep device IRQs on their bound vCPU; rebalancing across vCPUs adds latency noise. |
+| `tuned-adm profile sap-hana-kvm-guest` | `vm_guest_tuned_profile` | Creates and activates the HANA-on-KVM guest tuned profile (THP / haltpoll match sap_vm defaults). Set empty to skip. |
 
 Guest kernel cmdline args (`transparent_hugepage=`, `mitigations=off`,
-C1 C-states) are set via cloud-init `bootcmd` + `post_boot.yml` `grubby`.
-`post_boot.yml` reboots the guest when `/proc/cmdline` does not yet match
-(`vm_guest_reboot_timeout`, default 600s). THP is also applied live via
-sysfs / `/etc/tmpfiles.d/sap-thp.conf`. Guest `irqbalance` is stopped and
-disabled via cloud-init `runcmd` and again in `post_boot.yml` for existing
-VMs.
+C1 C-states, `cpuidle_haltpoll.force=1`) are set via cloud-init `bootcmd`
++ `post_boot.yml` / `repo_update.yml` `grubby`. The guest reboots when
+`/proc/cmdline` does not yet match (`vm_guest_reboot_timeout`, default
+600s). THP is also applied live via sysfs /
+`/etc/tmpfiles.d/sap-thp.conf`. Guest `irqbalance` is stopped and disabled
+via cloud-init `runcmd` and again in `post_boot.yml` for existing VMs.
+`post_boot.yml` also installs/activates `sap-hana-kvm-guest` (unlike
+`community.sap_infrastructure.sap_vm_preconfigure`, THP stays
+`vm_guest_thp` / madvise rather than `never`).

@@ -77,18 +77,18 @@ set `-e vm_memory_prefault=false` if an older libvirt rejects the
 
 Inside the guest, the kernel command line includes
 `transparent_hugepage={{ vm_guest_thp }}` (default `madvise`),
-`mitigations=off`, and `intel_idle.max_cstate=1 processor.max_cstate=1`.
-SAP Note 2131662 warns about compaction stalls from `always`, but `never`
-removes hugepages entirely — `madvise` lets HANA opt in via
-`madvise(MADV_HUGEPAGE)` for its main allocator without surprise
-compaction. The live sysfs knobs
+`mitigations=off`, `intel_idle.max_cstate=1 processor.max_cstate=1`, and
+`cpuidle_haltpoll.force=1`. SAP Note 2131662 warns about compaction stalls
+from `always`, but `never` removes hugepages entirely — `madvise` lets
+HANA opt in via `madvise(MADV_HUGEPAGE)` for its main allocator without
+surprise compaction. The live sysfs knobs
 (`/sys/kernel/mm/transparent_hugepage/enabled` and
 `/sys/kernel/mm/transparent_hugepage/defrag`) match that policy and are
 persisted with `/etc/tmpfiles.d/sap-thp.conf`. Override with
-`-e vm_guest_thp=always|never` to A/B test. `mitigations=off` and the C1
-C-state cap match the hypervisor `host_tuning` rationale (benchmark
-throughput / wake-up latency) and require a guest reboot when applied to
-an existing VM via `post_boot.yml`.
+`-e vm_guest_thp=always|never` to A/B test. `mitigations=off`, the C1
+C-state cap, and `cpuidle_haltpoll.force=1` match the latency-tuning
+rationale and require a guest reboot when applied to an existing VM via
+`post_boot.yml`.
 
 ## Disk
 
@@ -252,4 +252,6 @@ frequency is applied and start is retried. Override with
 `-e vm_tsc_frequency=...` only on hosts that support TSC scaling.
 
 The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
-`x2apic`. Memory ballooning is disabled.
+`x2apic`. Because every vCPU is 1:1 pinned, `<kvm><hint-dedicated state='on'/>`
+is enabled under `<features>` so the guest can rely on vCPU↔pCPU stickiness.
+Memory ballooning is disabled.

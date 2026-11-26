@@ -107,6 +107,7 @@ Useful extra-vars:
 | `vm_guest_halt_poll_ns` | `400000` | Guest `haltpoll` `guest_halt_poll_ns` (400µs; guest-side) |
 | `vm_guest_thp` | `madvise` | Guest `transparent_hugepage=` + THP sysfs (`madvise`: HANA opts in via MADV_HUGEPAGE; use `always`/`never` to A/B) |
 | `vm_guest_reboot_timeout` | `600` | Seconds to wait after `post_boot.yml` reboots the guest for `mitigations=off` / C1 C-state cmdline |
+| `vm_guest_tuned_profile` | `sap-hana-kvm-guest` | Guest `tuned-adm` profile to install/activate; set empty to skip |
 
 Tags: `preflight`, `cleanup`, `topology` (always), `host_tuning`,
 `memory_cleanup`, `kvm_tuning`, `hugepages`, `disk`, `raw_convert`,
