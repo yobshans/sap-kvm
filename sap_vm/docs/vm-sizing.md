@@ -251,7 +251,7 @@ no TSC scaling and the value is still out of range, libvirt's advertised host
 frequency is applied and start is retried. Override with
 `-e vm_tsc_frequency=...` only on hosts that support TSC scaling.
 
-The domain uses host-passthrough, L3 cache emulation, and `rdtscp` / `invtsc` /
-`x2apic`. Because every vCPU is 1:1 pinned, `<kvm><hint-dedicated state='on'/>`
-is enabled under `<features>` so the guest can rely on vCPU↔pCPU stickiness.
-Memory ballooning is disabled.
+The domain uses host-passthrough, `<cache mode='passthrough'/>`, and
+`rdtscp` / `invtsc` / `x2apic`. Because every vCPU is 1:1 pinned,
+`<kvm><hint-dedicated state='on'/>` is enabled under `<features>` so the
+guest can rely on vCPU↔pCPU stickiness. Memory ballooning is disabled.
