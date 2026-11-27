@@ -1,0 +1,8 @@
+#!/bin/bash
+# Load cpuidle-haltpoll when the sap-hana-kvm-guest tuned profile starts.
+# Guest cmdline also sets cpuidle_haltpoll.force=1; this covers profile
+# activation before / between reboots.
+
+if [ "$1" = "start" ]; then
+    modprobe cpuidle-haltpoll force 2>/dev/null || modprobe haltpoll 2>/dev/null || true
+fi

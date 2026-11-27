@@ -58,6 +58,66 @@ vm_tsc_frequency: auto
 hugepages_size_kb: 1048576
 hugepages_per_node: auto
 hugepage_nodes: auto
+# Drop caches and compact memory before trying to allocate 1 GiB hugepages.
+# This helps on a fragmented running hypervisor; set false on a shared host
+# where those two global memory operations would be too disruptive.
+vm_hugepage_prepare_memory: true
+# Stop host-side SAP HANA and leftover PBO processes before allocating
+# hugepages for the new KVM guest.
+vm_host_memory_cleanup: true
+
+# --- Hypervisor host tuning for CPU-pinned benchmarking (SAP PBO/HCMT) ---
+# tasks/host_tuning.yml always runs (no opt-out flag) and compares the
+# running hypervisor kernel's cmdline against isolcpus/nohz_full/rcu_nocbs
+# (exactly the host CPUs vm_cpu_pins dedicates to guest vCPUs -- see
+# templates/host_tuning.j2), a static default_hugepagesz=1G hugepagesz=1G
+# hugepages=N reservation sized from hugepages_per_node x hugepage_nodes,
+# mitigations=off, intel_idle.max_cstate=1 / processor.max_cstate=1
+# (cap idle C-states at C1 to avoid ~100µs deep-C-state wake-up latency
+# on isolated cores), and (Intel) kvm_intel.ple_gap=<vm_kvm_ple_gap>
+# (disable Pause-Loop Exiting at kvm_intel load time).
+# If they already match, it's a no-op. If not, it runs grubby and REBOOTS
+# THE HYPERVISOR (ansible.builtin.reboot, waits for it to come back) --
+# this takes down every OTHER VM on that hypervisor too, not just this
+# one. It sets mitigations=off host-wide, which is security-relevant.
+# Also sets IRQBALANCE_BANNED_CPULIST to the same isolcpus range (no reboot).
+# See README.md before running this against a shared/production hypervisor.
+vm_host_reboot_timeout: 600
+
+# --- KVM kernel module tuning for CPU-pinned, lock-heavy benchmark
+#     workloads (tasks/kvm_tuning.yml, always runs). These are global
+#     kvm/kvm_intel module parameters -- they affect every VM on this
+#     hypervisor, not just this one. ple_gap is also set on the Intel
+#     host cmdline via host_tuning (kvm_intel.ple_gap=...); modprobe.d
+#     keeps it across module reloads. Skipped on AMD (no kvm_intel). ---
+vm_kvm_halt_poll_ns: 2000000         # vCPU busy-waits longer before halting
+vm_kvm_lapic_timer_advance_ns: 1000  # compensates for VMEXIT latency on lapic timer delivery
+vm_kvm_ple_gap: 0                    # disable Pause-Loop Exiting (spinning locks cause unnecessary VMEXITs under PLE)
+
+# --- Guest-side latency tunables (tasks/post_boot.yml + cloud-init) ---
+# haltpoll module inside the guest (NOT host kvm.halt_poll_ns). Default
+# kernel value is 200000 (200µs); 400000 (400µs) reduces vCPU wake-up
+# latency for HANA's latency-sensitive operations.
+vm_guest_halt_poll_ns: 400000
+# Guest transparent hugepage policy. Use madvise (not always/never):
+# SAP Note 2131662 warns about THP compaction stalls from "always", but
+# "never" removes hugepages entirely. madvise lets HANA opt in via
+# madvise(MADV_HUGEPAGE) for its main allocator without surprise compaction.
+# Override with -e vm_guest_thp=always|never to A/B test.
+vm_guest_thp: madvise
+# Guest kernel cmdline also sets mitigations=off,
+# intel_idle.max_cstate=1 / processor.max_cstate=1 (same rationale as
+# hypervisor host_tuning), and cpuidle_haltpoll.force=1 (force haltpoll
+# idle governor). Applied via cloud-init bootcmd + post_boot / repo_update
+# grubby; guest reboots when /proc/cmdline does not yet match (or when a
+# newer kernel must be activated). Seconds to wait for the guest to come
+# back after that reboot:
+vm_guest_reboot_timeout: 600
+# Guest tuned profile (post_boot.yml). Creates/activates sap-hana-kvm-guest
+# (HANA-on-KVM guest tuning, aligned with vm_guest_thp / vm_guest_halt_poll_ns).
+# Set empty string to skip. Note: sap-benchmark install_sap_hana's
+# sap_hana_preconfigure may later switch the guest to profile "sap-hana".
+vm_guest_tuned_profile: sap-hana-kvm-guest
 
 # Pre-fault all guest memory at VM start (<allocation mode='immediate'/> in
 # <memoryBacking>, vm-domain.xml.j2) instead of faulting pages in on first
@@ -90,7 +150,7 @@ guest_image_compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RH
 # guest_image_compose_url; override independently when you want the guest to
 # track a newer compose than the one it was installed from.
 # Override with -e compose_url='http://mirror.scalelab.redhat.com/RHEL10/10.2'
-compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20261012.d.0/compose"
+compose_url: "http://download.eng.tlv.redhat.com/rhel-10/composes/RHEL-10/RHEL-10.2-updates-20261001.1/compose"
 
 # Release used for guest yum repo names/descriptions. Kept independent of
 # compose_url since not every lab's URL encodes the release the same way.
@@ -154,10 +214,13 @@ vm_disk_active_path: "{{ vm_disk_raw_path if guest_raw_image | bool else vm_disk
 #   vm_nvme: true -- tasks/nvme.yml instead discovers an UNUSED NVMe device
 #     on the hypervisor (lsblk TRAN=nvme with no partitions/LVM/mountpoint),
 #     binds it to vfio-pci, and PCI-passes it straight through to the guest
-#     (<hostdev>) -- no vdb/qcow2 is created at all. Requires IOMMU enabled
-#     on the HYPERVISOR kernel (intel_iommu=on/amd_iommu=on + iommu=pt); the
-#     role fails fast with grubby instructions if it is not. See README.md.
+#     (<hostdev>) -- no vdb/qcow2 is created at all. Host tuning automatically
+#     adds the correct Intel/AMD IOMMU kernel arguments and reboots once when
+#     needed; tasks/nvme.yml then verifies IOMMU is active before binding.
 vm_nvme: false
+# Host NVMe namespace reset by tasks/nvme_host_cleanup.yml before PCI
+# passthrough. Override this when the passthrough device is not nvme0n1.
+vm_nvme_device: /dev/nvme0n1
 vm_data_disk_size: "{{ vm_disk_size }}"
 vm_data_disk_path: "{{ kvm_base_dir }}/{{ vm_name }}-data.qcow2"
 
@@ -263,6 +326,9 @@ cloud_init_boot_timeout: 1800
 # (tasks/repo_update.yml's vm_update_repos) and run `dnf update` so it picks
 # up newer packages/errata without re-baking a new guest image. Set to
 # false to leave the guest pinned to guest_image_compose_url's packages.
+# When dnf installs a newer kernel-core, repo_update also sets it as the
+# grubby default and reboots the guest (vm_guest_reboot_timeout) so uname
+# matches the updates compose.
 guest_update_packages: true
 # dnf update on 5 real repos can run long depending on how much has drifted
 # since guest_image_compose_url; polled via async so the play doesn't block

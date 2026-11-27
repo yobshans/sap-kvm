@@ -1,0 +1,57 @@
+---
+# sap_vm/tasks/hugepages_margin.yml — Add a runtime usage margin to the
+# otherwise exact-fit 1 GiB hugepage reservation.
+#
+# QEMU fails with "unable to map backing store for guest RAM" when
+# free_hugepages is lower than the guest's per-NUMA-page requirement, even
+# if nr_hugepages is large enough on paper. This task measures the current
+# shortage before host tuning and increases hugepages_per_node by that
+# amount so the static boot reservation and runtime reservation both leave
+# enough free pages for the new guest.
+
+- name: Read current hugepage reservations before sizing the boot argument
+  ansible.builtin.slurp:
+    src: "/sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/nr_hugepages"
+  loop: "{{ hugepage_nodes }}"
+  register: _hugepage_margin_nr
+
+- name: Read current free hugepages before sizing the boot argument
+  ansible.builtin.slurp:
+    src: "/sys/devices/system/node/node{{ item }}/hugepages/hugepages-{{ hugepages_size_kb }}kB/free_hugepages"
+  loop: "{{ hugepage_nodes }}"
+  register: _hugepage_margin_free
+
+- name: Calculate the hugepage usage margin
+  ansible.builtin.set_fact:
+    hugepage_margin_required: "{{ hugepages_per_node | int }}"
+    hugepage_margin_free_values: >-
+      {{ _hugepage_margin_free.results
+         | map(attribute='content')
+         | map('b64decode')
+         | map('trim')
+         | map('int')
+         | list }}
+    hugepage_margin_nr_values: >-
+      {{ _hugepage_margin_nr.results
+         | map(attribute='content')
+         | map('b64decode')
+         | map('trim')
+         | map('int')
+         | list }}
+
+- name: Apply the hugepage usage margin
+  ansible.builtin.set_fact:
+    hugepage_margin_extra: >-
+      {{ [hugepage_margin_nr_values | max - hugepage_margin_free_values | min, 0] | max }}
+    hugepages_per_node: >-
+      {{ [hugepage_margin_required | int + [hugepage_margin_nr_values | max - hugepage_margin_free_values | min, 0] | max,
+          hugepage_margin_nr_values | max] | max }}
+
+- name: Show the hugepage usage margin
+  ansible.builtin.debug:
+    msg:
+      - "Base guest requirement: {{ hugepage_margin_required }} pages per NUMA node"
+      - "Current free pages per node: {{ hugepage_margin_free_values }}"
+      - "Current reserved pages per node: {{ hugepage_margin_nr_values }}"
+      - "Extra pages added for current usage: {{ hugepage_margin_extra }}"
+      - "Adjusted reservation: {{ hugepages_per_node }} pages per NUMA node"

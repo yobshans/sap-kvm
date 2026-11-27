@@ -20,6 +20,22 @@ chpasswd:
       password: "{{ vm_root_password }}"
       type: text
 
+bootcmd:
+  # Guest latency cmdline (mirrors hypervisor host_tuning where useful):
+  # - transparent_hugepage={{ vm_guest_thp }} (default madvise): HANA can
+  #   madvise(MADV_HUGEPAGE) without "always" compaction stalls (SAP Note
+  #   2131662) or "never" removing hugepages entirely.
+  # - mitigations=off: disable Spectre/MDS/etc. for benchmark throughput.
+  # - intel_idle.max_cstate=1 processor.max_cstate=1: cap idle at C1 to
+  #   avoid deep-C-state wake-up latency.
+  # - cpuidle_haltpoll.force=1: force the haltpoll idle governor in the
+  #   guest (pairs with guest_halt_poll_ns below).
+  - grubby --update-kernel=ALL --remove-args="transparent_hugepage mitigations intel_idle.max_cstate processor.max_cstate cpuidle_haltpoll.force" --args="transparent_hugepage={{ vm_guest_thp }} mitigations=off intel_idle.max_cstate=1 processor.max_cstate=1 cpuidle_haltpoll.force=1"
+  - [ sh, -c, "grep -qw transparent_hugepage={{ vm_guest_thp }} /proc/cmdline && grep -qw mitigations=off /proc/cmdline && grep -qw intel_idle.max_cstate=1 /proc/cmdline && grep -qw processor.max_cstate=1 /proc/cmdline && grep -qw cpuidle_haltpoll.force=1 /proc/cmdline || reboot" ]
+  # Guest haltpoll: raise wake-up busy-wait from the kernel default 200µs
+  # to vm_guest_halt_poll_ns (default 400µs) for HANA latency-sensitive ops.
+  - [ sh, -c, "modprobe haltpoll 2>/dev/null || true; echo {{ vm_guest_halt_poll_ns }} > /sys/module/haltpoll/parameters/guest_halt_poll_ns 2>/dev/null || true" ]
+
 write_files:
   - path: /etc/ssh/sshd_config.d/00-sap.conf
     permissions: "0644"
@@ -30,7 +46,12 @@ write_files:
   - path: /etc/tmpfiles.d/sap-thp.conf
     permissions: "0644"
     content: |
-      w /sys/kernel/mm/transparent_hugepage/enabled - - - - never
+      w /sys/kernel/mm/transparent_hugepage/enabled - - - - {{ vm_guest_thp }}
+      w /sys/kernel/mm/transparent_hugepage/defrag - - - - {{ vm_guest_thp }}
+  - path: /etc/modprobe.d/haltpoll-tuning.conf
+    permissions: "0644"
+    content: |
+      options haltpoll guest_halt_poll_ns={{ vm_guest_halt_poll_ns }}
 
 yum_repos:
 {% for repo in vm_repos %}
@@ -54,5 +75,9 @@ runcmd:
   - systemctl enable --now sshd
   - systemctl reload sshd || systemctl restart sshd || true
   - systemctl enable --now qemu-guest-agent || true
+  # Guest IRQs stay on the vCPU the device is bound to; irqbalance moving
+  # them across vCPUs adds latency noise for HANA/PBO.
+  - systemctl stop irqbalance || true
+  - systemctl disable irqbalance || true
   - growpart /dev/vda 4 || true
   - xfs_growfs / || resize2fs /dev/vda4 || true

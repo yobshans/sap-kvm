@@ -37,12 +37,18 @@
   <features>
     <acpi/>
     <apic/>
+    <!-- Safe here because every vCPU is 1:1 pinned in <cputune> above;
+         tells the guest kernel it can rely on vCPU↔pCPU stickiness
+         (e.g. for real-time / latency-sensitive scheduling). -->
+    <kvm>
+      <hint-dedicated state='on'/>
+    </kvm>
   </features>
 
   <!-- CPU: host-passthrough with explicit guest topology -->
-  <cpu mode='host-passthrough' check='none' migratable='on'>
+  <cpu mode='host-passthrough' check='none' migratable='off'>
     <topology sockets='{{ vm_sockets }}' dies='1' clusters='1' cores='{{ vm_cores_per_socket }}' threads='{{ vm_threads_per_core }}'/>
-    <cache level='3' mode='emulate'/>
+    <cache mode='passthrough'/>
 {% for feat in vm_cpu_features %}
     <feature policy='require' name='{{ feat }}'/>
 {% endfor %}

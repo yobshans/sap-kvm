@@ -1,0 +1,112 @@
+# Hypervisor host tuning for CPU-pinned benchmarking (SAP PBO/HCMT)
+
+> ⚠️ **This section changes the HYPERVISOR, not just the guest, and can
+> reboot it.** `tasks/host_tuning.yml` always runs (there is no opt-out
+> flag) and, when the running kernel's cmdline doesn't already carry the
+> values the current topology needs, it runs `grubby` and **reboots the
+> hypervisor** — taking down **every other VM currently running on that
+> host**, not just this one. It is idempotent (a re-run with an
+> already-matching cmdline is a no-op, and it only reboots again if the
+> topology changes enough to need different values — e.g. a different
+> `vm_vcpus` override), but **do not run this role against a shared or
+> production hypervisor without accounting for that.**
+
+## CPU isolation + static hugepages + C1 C-states + disabled CPU mitigations + PLE (`tasks/host_tuning.yml`)
+
+After topology discovery (`vm_cpu_pins`, `hugepages_per_node`,
+`hugepage_nodes`) but before `hugepages.yml`'s runtime reservation,
+`templates/host_tuning.j2` computes the desired hypervisor kernel cmdline:
+
+- `isolcpus=<range>` / `nohz_full=<range>` / `rcu_nocbs=<range>` — exactly
+  the host CPUs `vm_cpu_pins` dedicates to guest vCPUs (the 1:1 pins
+  above), collapsed into ranges. The reserved emulator/iothread core is
+  deliberately **left out** of this range — it needs to keep receiving
+  normal host scheduling/interrupts/timers, so it's never isolated.
+- `default_hugepagesz=1G hugepagesz=1G hugepages=<N>` — a static,
+  boot-time 1 GiB hugepage reservation sized from
+  `hugepages_per_node × hugepage_nodes` (the same total `hugepages.yml`
+  already computes/verifies at runtime), more reliable than runtime
+  reservation on a host whose memory is already fragmented.
+- `intel_idle.max_cstate=1` / `processor.max_cstate=1` — cap host idle
+  C-states at C1 so isolated cores do not pay ~100µs deep-C-state wake-up
+  latency per vCPU exit.
+- `mitigations=off` — disables CPU vulnerability mitigations on the
+  hypervisor for benchmark throughput.
+- `kvm_intel.ple_gap=<vm_kvm_ple_gap>` (default `0`, Intel only) —
+  disables Pause-Loop Exiting at `kvm_intel` load time so spinning locks
+  in benchmark workloads do not cause unnecessary VMEXITs.
+
+Example (2 sockets × 40 cores × SMT-2, 1 reserved core/node at CPU 0/40):
+
+```bash
+grubby --update-kernel=ALL \
+  --remove-args="isolcpus nohz_full rcu_nocbs hugepages default_hugepagesz hugepagesz mitigations intel_idle.max_cstate processor.max_cstate kvm_intel.ple_gap" \
+  --args="default_hugepagesz=1G hugepagesz=1G hugepages=280 isolcpus=1-39,41-79 nohz_full=1-39,41-79 rcu_nocbs=1-39,41-79 mitigations=off intel_idle.max_cstate=1 processor.max_cstate=1 kvm_intel.ple_gap=0"
+```
+
+This is compared against `ansible_cmdline` (the currently **booted**
+kernel's `/proc/cmdline`, not just what's configured for the next boot):
+if everything already matches, nothing happens. Otherwise, `grubby` runs
+(`--remove-args` first so repeated topology changes replace the old
+values instead of accumulating duplicates), the hypervisor **reboots**
+(`ansible.builtin.reboot`, waits for it to come back), facts are
+re-gathered, and the cmdline is checked again — failing loudly if it still
+doesn't match (wrong default boot entry, multiple installed kernels,
+etc.) rather than silently continuing on a half-tuned host.
+
+**Sets `mitigations=off`** — disabling CPU vulnerability mitigations
+(Spectre/MDS/L1TF/etc.) on the hypervisor is intentional for benchmark
+throughput, but it is security-relevant and host-wide. Do not run this role
+against a shared or production hypervisor unless that exposure is acceptable.
+
+### Host irqbalance banned CPU list
+
+After the cmdline check (whether or not a reboot happened),
+`host_tuning.yml` sets `IRQBALANCE_BANNED_CPULIST` in
+`/etc/sysconfig/irqbalance` to the same `isolcpus` range and restarts
+`irqbalance` when the value changes. That keeps host IRQs off the
+guest-pinned cores (the reserved emulator/iothread cores stay eligible).
+
+## KVM kernel module tuning (`tasks/kvm_tuning.yml`)
+
+Runs right after host tuning (so it applies to the freshly (re)loaded
+module if a reboot just happened). These are global `kvm`/`kvm_intel`
+kernel module parameters — like host tuning above, they affect **every**
+VM on this hypervisor, not just this one:
+
+| Parameter | Default | Why |
+|---|---|---|
+| `/sys/module/kvm/parameters/halt_poll_ns` | `vm_kvm_halt_poll_ns` (2000000) | vCPU busy-waits longer before halting, reducing wakeup latency |
+| `/sys/module/kvm/parameters/lapic_timer_advance_ns` | `vm_kvm_lapic_timer_advance_ns` (1000) | Compensates for VMEXIT latency on lapic timer delivery |
+| `kvm_intel.ple_gap` (cmdline + modprobe.d) | `vm_kvm_ple_gap` (0) | Disables Pause-Loop Exiting — set on the Intel host cmdline by `host_tuning.yml` and also persisted in `/etc/modprobe.d/kvm-tuning.conf` |
+| `/sys/module/kvm_intel/parameters/enable_apicv` | `Y` | Enables APICv and posted interrupts on Intel hosts |
+
+`halt_poll_ns` / `enable_apicv` are applied live via sysfs and persisted to
+`/etc/modprobe.d/kvm-tuning.conf`. `ple_gap` is Intel-specific and is
+primarily applied via the host cmdline (`kvm_intel.ple_gap=0`) so it is
+active when `kvm_intel` loads; on AMD that cmdline arg is omitted.
+
+## Guest-side latency tunables (`tasks/post_boot.yml` + cloud-init)
+
+These are applied **inside the guest** (not on the hypervisor):
+
+| Setting | Default | Why |
+|---|---|---|
+| `/sys/module/haltpoll/parameters/guest_halt_poll_ns` | `vm_guest_halt_poll_ns` (400000 = 400µs) | Raises the guest haltpoll busy-wait above the kernel default 200µs to cut vCPU wake-up latency for HANA latency-sensitive ops. Persisted in `/etc/modprobe.d/haltpoll-tuning.conf`. |
+| `transparent_hugepage=` + THP sysfs | `vm_guest_thp` (`madvise`) | `madvise` lets HANA use `madvise(MADV_HUGEPAGE)` without `always` compaction stalls (SAP Note 2131662) or `never` removing hugepages. Override with `-e vm_guest_thp=always\|never` to A/B test. |
+| `mitigations=off` | hardcoded | Same as hypervisor: disable Spectre/MDS/etc. for benchmark throughput (security-relevant). |
+| `intel_idle.max_cstate=1` / `processor.max_cstate=1` | hardcoded | Cap guest idle at C1 to avoid deep-C-state wake-up latency. |
+| `cpuidle_haltpoll.force=1` | hardcoded | Force the haltpoll idle governor (pairs with `guest_halt_poll_ns`). |
+| `irqbalance` stopped + disabled | hardcoded | Keep device IRQs on their bound vCPU; rebalancing across vCPUs adds latency noise. |
+| `tuned-adm profile sap-hana-kvm-guest` | `vm_guest_tuned_profile` | Creates and activates the HANA-on-KVM guest tuned profile (THP / haltpoll match sap_vm defaults). Set empty to skip. |
+
+Guest kernel cmdline args (`transparent_hugepage=`, `mitigations=off`,
+C1 C-states, `cpuidle_haltpoll.force=1`) are set via cloud-init `bootcmd`
++ `post_boot.yml` / `repo_update.yml` `grubby`. The guest reboots when
+`/proc/cmdline` does not yet match (`vm_guest_reboot_timeout`, default
+600s). THP is also applied live via sysfs /
+`/etc/tmpfiles.d/sap-thp.conf`. Guest `irqbalance` is stopped and disabled
+via cloud-init `runcmd` and again in `post_boot.yml` for existing VMs.
+`post_boot.yml` also installs/activates `sap-hana-kvm-guest` (unlike
+`community.sap_infrastructure.sap_vm_preconfigure`, THP stays
+`vm_guest_thp` / madvise rather than `never`).

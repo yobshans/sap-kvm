@@ -1,0 +1,9 @@
+version: 2
+ethernets:
+  # Match whatever name the guest virtio NIC gets (enp1s0, ens3, eth0, ...).
+  # virbr0 is the HOST bridge for the libvirt NAT network -- it is not a
+  # guest interface and must not appear here.
+  id0:
+    match:
+      name: "e*"
+    dhcp4: true

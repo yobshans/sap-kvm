@@ -107,10 +107,67 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
-- name: Disable transparent hugepages on the guest
+- name: Set guest latency args on the kernel cmdline
+  # THP (default madvise), mitigations=off, C1 C-state cap, and
+  # cpuidle_haltpoll.force=1. Re-applies on existing guests (cloud-init
+  # bootcmd only runs first boot). These only take effect after reboot —
+  # see next tasks.
+  ansible.builtin.command:
+    cmd: >-
+      grubby --update-kernel=ALL
+      --remove-args="transparent_hugepage mitigations intel_idle.max_cstate processor.max_cstate cpuidle_haltpoll.force"
+      --args="transparent_hugepage={{ vm_guest_thp }} mitigations=off intel_idle.max_cstate=1 processor.max_cstate=1 cpuidle_haltpoll.force=1"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Check whether the guest kernel cmdline already has latency args
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      grep -qw transparent_hugepage={{ vm_guest_thp }} /proc/cmdline &&
+      grep -qw mitigations=off /proc/cmdline &&
+      grep -qw intel_idle.max_cstate=1 /proc/cmdline &&
+      grep -qw processor.max_cstate=1 /proc/cmdline &&
+      grep -qw cpuidle_haltpoll.force=1 /proc/cmdline
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_latency_cmdline
+  changed_when: false
+  failed_when: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Reboot the guest to apply latency cmdline args
+  ansible.builtin.reboot:
+    msg: "Rebooting guest for sap_vm latency cmdline (mitigations=off / C1 / THP / cpuidle_haltpoll.force)"
+    reboot_timeout: "{{ vm_guest_reboot_timeout | int }}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_latency_cmdline.rc != 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Apply transparent hugepage policy live on the guest
   ansible.builtin.copy:
     dest: /sys/kernel/mm/transparent_hugepage/enabled
-    content: "never\n"
+    content: "{{ vm_guest_thp }}\n"
     unsafe_writes: true
   delegate_to: "{{ vm_name }}_guest"
   become: false
@@ -122,10 +179,27 @@
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
 
-- name: Persist transparent hugepage disable across guest reboot
+- name: Apply transparent hugepage defrag policy live on the guest
+  ansible.builtin.copy:
+    dest: /sys/kernel/mm/transparent_hugepage/defrag
+    content: "{{ vm_guest_thp }}\n"
+    unsafe_writes: true
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Persist transparent hugepage settings across guest reboot
   ansible.builtin.copy:
     dest: /etc/tmpfiles.d/sap-thp.conf
-    content: "w /sys/kernel/mm/transparent_hugepage/enabled - - - - never\n"
+    content: |
+      w /sys/kernel/mm/transparent_hugepage/enabled - - - - {{ vm_guest_thp }}
+      w /sys/kernel/mm/transparent_hugepage/defrag - - - - {{ vm_guest_thp }}
     mode: "0644"
   delegate_to: "{{ vm_name }}_guest"
   become: false
@@ -136,6 +210,218 @@
     ansible_python_interpreter: /usr/libexec/platform-python
     ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
     ansible_host_key_checking: false
+
+- name: Ensure the guest haltpoll module is loaded
+  community.general.modprobe:
+    name: haltpoll
+    state: present
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  failed_when: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Check whether guest_halt_poll_ns is available
+  ansible.builtin.stat:
+    path: /sys/module/haltpoll/parameters/guest_halt_poll_ns
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_halt_poll_ns_param
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Raise guest_halt_poll_ns (reduces vCPU wake-up latency)
+  ansible.builtin.copy:
+    dest: /sys/module/haltpoll/parameters/guest_halt_poll_ns
+    content: "{{ vm_guest_halt_poll_ns }}"
+    unsafe_writes: true
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_halt_poll_ns_param.stat.exists
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Persist guest_halt_poll_ns across guest reboot/module reload
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/haltpoll-tuning.conf
+    content: |
+      options haltpoll guest_halt_poll_ns={{ vm_guest_halt_poll_ns }}
+    mode: "0644"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: guest_halt_poll_ns_param.stat.exists
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Disable irqbalance on the guest
+  # Keep device IRQs on their bound vCPU; irqbalance rebalancing across
+  # vCPUs adds latency noise for HANA/PBO. Re-applies on existing guests
+  # (cloud-init runcmd only runs first boot).
+  ansible.builtin.systemd:
+    name: irqbalance
+    state: stopped
+    enabled: false
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  failed_when: false
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+# sap-hana-kvm-guest tuned profile (same intent as community.sap_infrastructure
+# sap_vm_preconfigure, but THP/haltpoll match sap_vm defaults). tuned is in
+# vm_packages; this creates the profile and activates it on every run.
+- name: Discover guest tuned profile directory
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      if [[ -d /usr/lib/tuned/profiles ]] || [[ -d /etc/tuned/profiles ]]; then
+          echo /etc/tuned/profiles
+      else
+          echo /usr/lib/tuned
+      fi
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_tuned_profile_parent
+  changed_when: false
+  when: (vm_guest_tuned_profile | default('')) | length > 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Ensure guest tuned profile directory exists
+  ansible.builtin.file:
+    path: "{{ guest_tuned_profile_parent.stdout }}/{{ vm_guest_tuned_profile }}"
+    state: directory
+    mode: "0755"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: (vm_guest_tuned_profile | default('')) | length > 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Install guest tuned profile haltpoll helper script
+  ansible.builtin.copy:
+    dest: "{{ guest_tuned_profile_parent.stdout }}/{{ vm_guest_tuned_profile }}/haltpoll.sh"
+    content: "{{ lookup('template', 'sap-hana-kvm-guest-haltpoll.sh.j2') }}"
+    mode: "0755"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: (vm_guest_tuned_profile | default('')) | length > 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Install guest tuned profile configuration
+  ansible.builtin.copy:
+    dest: "{{ guest_tuned_profile_parent.stdout }}/{{ vm_guest_tuned_profile }}/tuned.conf"
+    content: "{{ lookup('template', 'sap-hana-kvm-guest-tuned.conf.j2') }}"
+    mode: "0644"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: (vm_guest_tuned_profile | default('')) | length > 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Ensure tuned is enabled and running on the guest
+  ansible.builtin.systemd:
+    name: tuned
+    state: started
+    enabled: true
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  when: (vm_guest_tuned_profile | default('')) | length > 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Activate guest tuned profile {{ vm_guest_tuned_profile }}
+  ansible.builtin.command:
+    cmd: "tuned-adm profile {{ vm_guest_tuned_profile }}"
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_tuned_activate
+  changed_when: true
+  when: (vm_guest_tuned_profile | default('')) | length > 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Verify guest tuned profile is active
+  ansible.builtin.command:
+    cmd: tuned-adm active
+  delegate_to: "{{ vm_name }}_guest"
+  become: false
+  register: guest_tuned_active
+  changed_when: false
+  failed_when: >-
+    vm_guest_tuned_profile not in (guest_tuned_active.stdout | default(''))
+  when: (vm_guest_tuned_profile | default('')) | length > 0
+  vars:
+    ansible_user: root
+    ansible_password: "{{ vm_root_password }}"
+    ansible_ssh_pass: "{{ vm_root_password }}"
+    ansible_python_interpreter: /usr/libexec/platform-python
+    ansible_ssh_common_args: "{{ hostvars[inventory_hostname].guest_ssh_common_args }}"
+    ansible_host_key_checking: false
+
+- name: Show active guest tuned profile
+  ansible.builtin.debug:
+    msg: "{{ guest_tuned_active.stdout }}"
+  when:
+    - (vm_guest_tuned_profile | default('')) | length > 0
+    - guest_tuned_active is defined
 
 - name: Set SELinux permissive on the guest
   ansible.builtin.copy:

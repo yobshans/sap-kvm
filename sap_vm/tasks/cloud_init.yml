@@ -21,6 +21,12 @@
     dest: "{{ cloud_init_dir }}/meta-data"
     mode: "0644"
 
+- name: Write cloud-init network-config
+  ansible.builtin.template:
+    src: network-config.j2
+    dest: "{{ cloud_init_dir }}/network-config"
+    mode: "0644"
+
 - name: Read cloud-init user-data
   ansible.builtin.slurp:
     src: "{{ cloud_init_dir }}/user-data"
@@ -30,6 +36,11 @@
   ansible.builtin.slurp:
     src: "{{ cloud_init_dir }}/meta-data"
   register: metadata_file
+
+- name: Read cloud-init network-config
+  ansible.builtin.slurp:
+    src: "{{ cloud_init_dir }}/network-config"
+  register: networkconfig_file
 
 - name: Remove stale cloud-init volume
   community.libvirt.virt_volume:
@@ -57,3 +68,4 @@
     cloudinit_config:
       USERDATA: "{{ userdata_file.content | b64decode | from_yaml }}"
       METADATA: "{{ metadata_file.content | b64decode | from_yaml }}"
+      NETWORK_CONFIG: "{{ networkconfig_file.content | b64decode | from_yaml }}"
